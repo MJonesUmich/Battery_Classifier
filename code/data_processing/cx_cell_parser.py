@@ -93,7 +93,7 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate):
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, tolerance=0.01):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01):
     unique_cycles = df['Cycle_Count'].unique()
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
@@ -115,7 +115,7 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, tolerance=0.01):
         plt.xlabel('Charge Time (s)')
         plt.ylabel('Voltage (V)', color='blue')
         plt.title(f'Cycle {cycle} Charge Profile')
-        save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}.png"
+        save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
         plt.savefig(save_string)
 
         #plot current on secondary axis
@@ -123,7 +123,7 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, tolerance=0.01):
         plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
         plt.ylabel('Voltage (V)', color='red')
         plt.title(f'Cycle {cycle} Discharge Profile')
-        save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}.png"
+        save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
         plt.savefig(save_string)
 
 
@@ -146,5 +146,5 @@ cell_vmax = cell_df["Max_Voltage"].values[0]
 cell_vmin = cell_df["Min_Voltage"].values[0]
 
 df = parse_file(file_path, cell_initial_capacity, cell_C_rate)
-generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature)
+generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id)
 print(df.Cycle_Count.max())
