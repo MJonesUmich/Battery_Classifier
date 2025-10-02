@@ -2,11 +2,35 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from datetime import datetime
+
 
 def load_meta_properties():
     #Finish function to associate file name with cell capacity, c-rate, and temperatures
     df = pd.read_excel(r'C:\Users\MJone\Downloads\battery_data_mapper.xlsx', sheet_name='General_Infos')
     return df
+
+
+def extract_date(file_name):
+    # Extract MM, DD, YR from the file name
+    parts = file_name.split('_')
+    month, day, year = int(parts[-4]), int(parts[-3]), int(parts[-2])
+    return datetime(year, month, day).date()
+
+
+def sort_files(file_names):
+
+    file_dates = []
+
+    # Extract dates and sort files
+    for file_name in file_names:
+        file_date = extract_date(file_name)
+        file_dates.append(file_date)
+
+    # Sort files by their corresponding dates
+    sorted_files = [file for _, file in sorted(zip(file_dates, file_names))]
+
+    return sorted_files, file_dates
 
 
 def load_file(file_path):
@@ -126,6 +150,17 @@ def scrub_and_tag(df, charge_indices, discharge_indices):
     return df
 
 
+def update_df(df, agg_df): 
+    if len(agg_df) == 0:
+        return df
+    else: 
+        max_cycle = agg_df['Cycle_Count'].max()
+        df['Cycle_Count'] = df['Cycle_Count'].astype(int) + int(max_cycle)
+        df['Ah_throughput'] = df['Ah_throughput'] + agg_df['Ah_throughput'].max()
+        df['EFC'] = df['EFC'] + agg_df['EFC'].max()
+        return df
+
+
 def parse_file(file_path, cell_initial_capacity, cell_C_rate):
     df = load_file(file_path)
     charge_indices, discharge_indices = get_indices(df)
@@ -171,28 +206,36 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         if one_fig_only:
             break
 
+
 #Example run through on 1 file
 meta_df = load_meta_properties()
 
 folder_path = r'C:\Users\MJone\Downloads\CX2_8\cx2_8'
 file_names = [file for file in os.listdir(folder_path)]
+sorted_files, file_dates = sort_files(file_names)
+sorted_files = sorted_files[::-1]
+file_dates = file_dates[::-1]
 
+print(sorted_files)
 error_dict = {}
+
+agg_df = pd.DataFrame()
+
+cell_id = folder_path.split('\\')[-1]
+cell_df = meta_df[meta_df["Battery_ID"].str.lower() == cell_id]
+
+cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+cell_C_rate = cell_df["C_rate"].values[0]
+cell_temperature = cell_df["Temperature (K)"].values[0]
+cell_vmax = cell_df["Max_Voltage"].values[0]
+cell_vmin = cell_df["Min_Voltage"].values[0]
 
 for i_count, file_name in enumerate(file_names): 
     try: 
         file_path   = os.path.join(folder_path, file_name)
-        cell_id = folder_path.split('\\')[-1]
-        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == cell_id]
-
-        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-        cell_C_rate = cell_df["C_rate"].values[0]
-        cell_temperature = cell_df["Temperature (K)"].values[0]
-        cell_vmax = cell_df["Max_Voltage"].values[0]
-        cell_vmin = cell_df["Min_Voltage"].values[0]
-
         df = parse_file(file_path, cell_initial_capacity, cell_C_rate)
-        generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+        update_df(df, agg_df)
+        agg_df = pd.concat([agg_df, df], ignore_index=True)
 
     #except add failed files to dictionary with error message
     except Exception as e:
@@ -203,4 +246,6 @@ for i_count, file_name in enumerate(file_names):
     #send to df and output: 
 error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
 error_df.to_csv('error_log.csv', index=False)
+agg_df.to_csv('aggregated_data.csv', index=False)
+generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
 
