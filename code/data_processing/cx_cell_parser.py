@@ -56,8 +56,49 @@ def get_indices(df):
                     discharge_indices.append(i)
                 prev = s
 
+        # print(len(charge_indices), len(discharge_indices))
+        # print(charge_indices[0], discharge_indices[0])
+        # print(charge_indices[1], discharge_indices[1])
+        # print(charge_indices[2], discharge_indices[2])
+        # print(charge_indices[3], discharge_indices[3])
+
+        complexity, expected_order = check_indices(charge_indices, discharge_indices)
+        if complexity == "High":
+            #Skip this file 
+            raise ValueError("Indices do not alternate correctly.")
+        else:
+            if expected_order[0] == 'discharge' and len(discharge_indices) > len(charge_indices):
+                discharge_indices = discharge_indices[:-1]
+            elif expected_order[0] == 'charge' and len(charge_indices) > len(discharge_indices):
+                charge_indices = charge_indices[:-1]
+
         assert len(charge_indices) == len(discharge_indices)
         return charge_indices, discharge_indices
+
+
+def check_indices(charge_indices, discharge_indices):
+
+    # Determine which starts first
+    if charge_indices[0] < discharge_indices[0]:
+        expected_order = ['charge', 'discharge']
+        combined = [(idx, 'charge') for idx in charge_indices] + [(idx, 'discharge') for idx in discharge_indices]
+    else:
+        expected_order = ['discharge', 'charge']
+        combined = [(idx, 'discharge') for idx in discharge_indices] + [(idx, 'charge') for idx in charge_indices]
+
+    # Sort combined list by index
+    combined.sort(key=lambda x: x[0])  # Sort by index
+
+    # Check for alternating order
+    for i, (_, label) in enumerate(combined):
+        if label != expected_order[i % 2]:
+            print(f"Error: Indices do not alternate correctly at position {i} ({combined[i - 1]} followed by {combined[i]})")
+            complexity = "High"
+            return complexity, expected_order
+
+    complexity = "Low"
+    print("Indices alternate correctly.")
+    return complexity, expected_order
 
 
 def scrub_and_tag(df, charge_indices, discharge_indices):
@@ -93,7 +134,7 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate):
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False):
     unique_cycles = df['Cycle_Count'].unique()
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
@@ -126,6 +167,9 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
         plt.savefig(save_string)
 
+        #Exit function after 1st run if one_fig_only is True
+        if one_fig_only:
+            break
 
 #Example run through on 1 file
 meta_df = load_meta_properties()
@@ -133,18 +177,30 @@ meta_df = load_meta_properties()
 folder_path = r'C:\Users\MJone\Downloads\CX2_8\cx2_8'
 file_names = [file for file in os.listdir(folder_path)]
 
-file_name = 'CX2_8_6_30_11.xlsx'  # Just take the first file for now
-file_path   = os.path.join(folder_path, file_name)
+error_dict = {}
 
-cell_id = folder_path.split('\\')[-1]
-cell_df = meta_df[meta_df["Battery_ID"].str.lower() == cell_id]
+for i_count, file_name in enumerate(file_names): 
+    try: 
+        file_path   = os.path.join(folder_path, file_name)
+        cell_id = folder_path.split('\\')[-1]
+        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == cell_id]
 
-cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-cell_C_rate = cell_df["C_rate"].values[0]
-cell_temperature = cell_df["Temperature (K)"].values[0]
-cell_vmax = cell_df["Max_Voltage"].values[0]
-cell_vmin = cell_df["Min_Voltage"].values[0]
+        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+        cell_C_rate = cell_df["C_rate"].values[0]
+        cell_temperature = cell_df["Temperature (K)"].values[0]
+        cell_vmax = cell_df["Max_Voltage"].values[0]
+        cell_vmin = cell_df["Min_Voltage"].values[0]
 
-df = parse_file(file_path, cell_initial_capacity, cell_C_rate)
-generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id)
-print(df.Cycle_Count.max())
+        df = parse_file(file_path, cell_initial_capacity, cell_C_rate)
+        generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+
+    #except add failed files to dictionary with error message
+    except Exception as e:
+        error_dict[file_name] = str(e)
+    
+    print(f'{i_count/len(file_names)}% Complete')
+
+    #send to df and output: 
+error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
+error_df.to_csv('error_log.csv', index=False)
+
