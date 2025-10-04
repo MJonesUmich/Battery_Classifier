@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
-
+import re
 
 def load_meta_properties():
     #Finish function to associate file name with cell capacity, c-rate, and temperatures
@@ -11,10 +11,20 @@ def load_meta_properties():
     return df
 
 
+def check_file_string(file_name):
+    name, extension = os.path.splitext(file_name)
+    if re.search(r'[a-zA-Z]+$', name):
+        return "bad"
+    else: 
+        return "good"
+
+
 def extract_date(file_name):
     # Extract MM, DD, YR from the file name
-    parts = file_name.split('_')
-    month, day, year = int(parts[-4]), int(parts[-3]), int(parts[-2])
+    name, extension = os.path.splitext(file_name)
+    parts = name.split('_')
+    month, day, year = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    print(month, day, year)
     return datetime(year, month, day).date()
 
 
@@ -24,6 +34,12 @@ def sort_files(file_names):
 
     # Extract dates and sort files
     for file_name in file_names:
+        # #ignore text files 
+        # if file_name.endswith('.txt'):
+        #     continue
+        # #ignore non cycling testsL 
+        # if 'self discharge test' in file_name:
+        #     continue
         file_date = extract_date(file_name)
         file_dates.append(file_date)
 
@@ -34,7 +50,7 @@ def sort_files(file_names):
 
 
 def load_file(file_path):
-        
+       
     # Read Excel (choose the sheet including Current/Voltage)
     xls = pd.ExcelFile(file_path)
     chosen = None
@@ -50,9 +66,26 @@ def load_file(file_path):
     df.columns = [str(c).strip() for c in df.columns]
 
     # Get the desired columns out: 
-    desired_cols = ["Current(A)", "Voltage(V)", "Test_Time(s)", "Date_Time"]
+    quant_cols = ["Current(A)", "Voltage(V)", "Test_Time(s)"]
+    #In the dataframe force these columns to be float
+    for col in quant_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    desired_cols = ["Current(A)", "Voltage(V)", "Test_Time(s)"]
     df = df[desired_cols].dropna().reset_index(drop=True)
     return df 
+
+
+def load_from_text_file(file_path):
+    # Load data from a text file
+    df = pd.read_csv(file_path, delimiter='\t')
+    #rename columns:
+    df.rename(columns={'Time': 'Test_Time(s)', 'mA': 'Current(A)', 'mV': 'Voltage(V)'}, inplace=True)
+    desired_cols = ["Current(A)", "Voltage(V)", "Test_Time(s)"]
+    df = df[desired_cols].dropna().reset_index(drop=True)
+    df["Voltage(V)"] = df["Voltage(V)"] / 1000  # Convert mV to V
+    df["Current(A)"] = df["Current(A)"] / 1000  # Convert mA to A
+    return df
 
 
 def get_indices(df):
@@ -138,7 +171,7 @@ def scrub_and_tag(df, charge_indices, discharge_indices):
 
     # Assign "Charge {i}" tags
     for i, (start, end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
-        df.loc[start:end - 1, 'Cycle_Count'] = f"{i}"
+        df.loc[start:end - 1, 'Cycle_Count'] = i
 
     #Coloumb count Ah throughput for each cycle
     df['Delta_Time(s)'] = df['Test_Time(s)'].diff().fillna(0)
@@ -161,8 +194,12 @@ def update_df(df, agg_df):
         return df
 
 
-def parse_file(file_path, cell_initial_capacity, cell_C_rate):
-    df = load_file(file_path)
+def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel'):
+    if method == 'excel': 
+        df = load_file(file_path)
+    elif method == 'text': 
+        df = load_from_text_file(file_path)
+
     charge_indices, discharge_indices = get_indices(df)
     df = scrub_and_tag(df, charge_indices, discharge_indices)
     df["C_rate"] = cell_C_rate
@@ -210,8 +247,20 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
 #Example run through on 1 file
 meta_df = load_meta_properties()
 
-folder_path = r'C:\Users\MJone\Downloads\CX2_8\cx2_8'
+folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_16'
+folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_8'
+folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_33'
+folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_34'
+folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_35'
+# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_36'
+# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_37'
+# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_38'
+
 file_names = [file for file in os.listdir(folder_path)]
+
+#skip files < 200kb since they don't have enough data to actually consider:  
+file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
+
 sorted_files, file_dates = sort_files(file_names)
 sorted_files = sorted_files[::-1]
 file_dates = file_dates[::-1]
@@ -222,18 +271,27 @@ error_dict = {}
 agg_df = pd.DataFrame()
 
 cell_id = folder_path.split('\\')[-1]
-cell_df = meta_df[meta_df["Battery_ID"].str.lower() == cell_id]
-
+#print(cell_id)
+cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+#print(cell_df)
 cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
 cell_C_rate = cell_df["C_rate"].values[0]
 cell_temperature = cell_df["Temperature (K)"].values[0]
 cell_vmax = cell_df["Max_Voltage"].values[0]
 cell_vmin = cell_df["Min_Voltage"].values[0]
 
+
+
 for i_count, file_name in enumerate(file_names): 
     try: 
+        #print(file_name)
         file_path   = os.path.join(folder_path, file_name)
-        df = parse_file(file_path, cell_initial_capacity, cell_C_rate)
+        if file_name.endswith('.txt'):
+            method = 'text'
+        elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+            method = 'excel'
+
+        df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
         update_df(df, agg_df)
         agg_df = pd.concat([agg_df, df], ignore_index=True)
 
@@ -241,9 +299,9 @@ for i_count, file_name in enumerate(file_names):
     except Exception as e:
         error_dict[file_name] = str(e)
     
-    print(f'{i_count/len(file_names)}% Complete')
+    print(f'{round(i_count/len(file_names)*100,1)}% Complete')
 
-    #send to df and output: 
+#send to df and output: 
 error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
 error_df.to_csv('error_log.csv', index=False)
 agg_df.to_csv('aggregated_data.csv', index=False)
