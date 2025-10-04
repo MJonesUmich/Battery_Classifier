@@ -19,16 +19,20 @@ def check_file_string(file_name):
         return "good"
 
 
-def extract_date(file_name):
+def extract_date(file_name, orientation='last'):
     # Extract MM, DD, YR from the file name
     name, extension = os.path.splitext(file_name)
     parts = name.split('_')
-    month, day, year = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    if orientation == 'last': 
+        month, day, year = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    elif orientation == 'first': 
+        month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
+    
     print(month, day, year)
     return datetime(year, month, day).date()
 
 
-def sort_files(file_names):
+def sort_files(file_names, orientation='last'):
 
     file_dates = []
 
@@ -40,7 +44,7 @@ def sort_files(file_names):
         # #ignore non cycling testsL 
         # if 'self discharge test' in file_name:
         #     continue
-        file_date = extract_date(file_name)
+        file_date = extract_date(file_name, orientation)
         file_dates.append(file_date)
 
     # Sort files by their corresponding dates
@@ -244,66 +248,68 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
             break
 
 
-#Example run through on 1 file
-meta_df = load_meta_properties()
 
-folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_16'
-folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_8'
-folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_33'
-folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_34'
-folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_35'
-# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_36'
-# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_37'
-# folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_38'
+if __name__ == "__main__": 
+    #Example run through on 1 file
+    meta_df = load_meta_properties()
 
-file_names = [file for file in os.listdir(folder_path)]
+    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_16'
+    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_8'
+    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_33'
+    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_34'
+    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_35'
+    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_36'
+    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_37'
+    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_38'
 
-#skip files < 200kb since they don't have enough data to actually consider:  
-file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
+    file_names = [file for file in os.listdir(folder_path)]
 
-sorted_files, file_dates = sort_files(file_names)
-sorted_files = sorted_files[::-1]
-file_dates = file_dates[::-1]
+    #skip files < 200kb since they don't have enough data to actually consider:  
+    file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
 
-print(sorted_files)
-error_dict = {}
+    sorted_files, file_dates = sort_files(file_names, orientation="last")
+    sorted_files = sorted_files[::-1]
+    file_dates = file_dates[::-1]
 
-agg_df = pd.DataFrame()
+    print(sorted_files)
+    error_dict = {}
 
-cell_id = folder_path.split('\\')[-1]
-#print(cell_id)
-cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-#print(cell_df)
-cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-cell_C_rate = cell_df["C_rate"].values[0]
-cell_temperature = cell_df["Temperature (K)"].values[0]
-cell_vmax = cell_df["Max_Voltage"].values[0]
-cell_vmin = cell_df["Min_Voltage"].values[0]
+    agg_df = pd.DataFrame()
+
+    cell_id = folder_path.split('\\')[-1]
+    #print(cell_id)
+    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+    #print(cell_df)
+    cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+    cell_C_rate = cell_df["C_rate"].values[0]
+    cell_temperature = cell_df["Temperature (K)"].values[0]
+    cell_vmax = cell_df["Max_Voltage"].values[0]
+    cell_vmin = cell_df["Min_Voltage"].values[0]
 
 
 
-for i_count, file_name in enumerate(file_names): 
-    try: 
-        #print(file_name)
-        file_path   = os.path.join(folder_path, file_name)
-        if file_name.endswith('.txt'):
-            method = 'text'
-        elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
-            method = 'excel'
+    for i_count, file_name in enumerate(file_names): 
+        try: 
+            #print(file_name)
+            file_path   = os.path.join(folder_path, file_name)
+            if file_name.endswith('.txt'):
+                method = 'text'
+            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+                method = 'excel'
 
-        df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
-        update_df(df, agg_df)
-        agg_df = pd.concat([agg_df, df], ignore_index=True)
+            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
+            update_df(df, agg_df)
+            agg_df = pd.concat([agg_df, df], ignore_index=True)
 
-    #except add failed files to dictionary with error message
-    except Exception as e:
-        error_dict[file_name] = str(e)
-    
-    print(f'{round(i_count/len(file_names)*100,1)}% Complete')
+        #except add failed files to dictionary with error message
+        except Exception as e:
+            error_dict[file_name] = str(e)
+        
+        print(f'{round(i_count/len(file_names)*100,1)}% Complete')
 
-#send to df and output: 
-error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-error_df.to_csv('error_log.csv', index=False)
-agg_df.to_csv('aggregated_data.csv', index=False)
-generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+    #send to df and output: 
+    error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
+    error_df.to_csv('error_log.csv', index=False)
+    agg_df.to_csv('aggregated_data.csv', index=False)
+    generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
 
