@@ -26,9 +26,11 @@ def extract_date(file_name, orientation='last'):
     if orientation == 'last': 
         month, day, year = int(parts[-3]), int(parts[-2]), int(parts[-1])
     elif orientation == 'first': 
-        month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
-    
-    print(month, day, year)
+        #find which part is that last on to have a path in it "\\": 
+        last_path = [i for i in range(len(parts)) if "\\" in parts[i]]
+        # Extract the month from the last valid path part
+        month = int(parts[last_path[-1]].split('\\')[-1])
+        day, year = int(last_path[-1] + 1), int(last_path[-1] + 2)
     return datetime(year, month, day).date()
 
 
@@ -84,7 +86,12 @@ def load_from_text_file(file_path):
     # Load data from a text file
     df = pd.read_csv(file_path, delimiter='\t')
     #rename columns:
-    df.rename(columns={'Time': 'Test_Time(s)', 'mA': 'Current(A)', 'mV': 'Voltage(V)'}, inplace=True)
+    df.rename(columns={'Time': 'Test_Time(s)', 'mA': 'Current(A)',
+                        'mV': 'Voltage(V)', 'Duration (sec)': 'Test_Time(s)'}, inplace=True)
+    
+    if "Duration (sec)" in df.columns: 
+        df.rename(columns = {"Duration (sec)": "Test_Time(s)"}, inplace=True)
+
     desired_cols = ["Current(A)", "Voltage(V)", "Test_Time(s)"]
     df = df[desired_cols].dropna().reset_index(drop=True)
     df["Voltage(V)"] = df["Voltage(V)"] / 1000  # Convert mV to V
@@ -162,7 +169,7 @@ def check_indices(charge_indices, discharge_indices):
     return complexity, expected_order
 
 
-def scrub_and_tag(df, charge_indices, discharge_indices):
+def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity):
     # Downsample to just between charge cycles
     df = df.iloc[charge_indices[0]:discharge_indices[-1] + 1].reset_index(drop=True)
 
@@ -205,22 +212,25 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel'):
         df = load_from_text_file(file_path)
 
     charge_indices, discharge_indices = get_indices(df)
-    df = scrub_and_tag(df, charge_indices, discharge_indices)
+    df = scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity)
     df["C_rate"] = cell_C_rate
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False, single_cycle=False):
     unique_cycles = df['Cycle_Count'].unique()
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
-        
-        #find where voltage first hits vmax and vmin, and where first discharge occurs
-        vmax_idx = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance].index[0]
-        vmin_idx = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance].index[0]
-        disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
-        
+        if single_cycle == True: 
+            vmax_idx = cycle_df[cycle_df['Current(A)']>0].index[0]
+            vmin_idx = cycle_df[cycle_df['Current(A)']<0].index[0]
+        else: 
+            #find where voltage first hits vmax and vmin, and where first discharge occurs
+            vmax_idx = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance].index[0]
+            vmin_idx = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance].index[0]
+
         #clip data to initial until Vmax, then from discharge start to Vmin
+        disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
         charge_cycle_df = cycle_df.loc[0:vmax_idx]
         discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx]
         charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
@@ -253,63 +263,65 @@ if __name__ == "__main__":
     #Example run through on 1 file
     meta_df = load_meta_properties()
 
-    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_16'
-    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_8'
-    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_33'
-    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_34'
-    folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_35'
-    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_36'
-    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_37'
-    # folder_path = r'C:\Users\MJone\Downloads\CX_files\CX2_38'
+    folder_paths = [r'C:\Users\MJone\Downloads\CX_files\CX2_16',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_8',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_33',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_34',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_35',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_36',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_37',
+                    r'C:\Users\MJone\Downloads\CX_files\CX2_38',
+                    ]
+    
+    for folder_path in folder_paths: 
+        file_names = [file for file in os.listdir(folder_path)]
 
-    file_names = [file for file in os.listdir(folder_path)]
+        #skip files < 200kb since they don't have enough data to actually consider:  
+        file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
 
-    #skip files < 200kb since they don't have enough data to actually consider:  
-    file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
+        sorted_files, file_dates = sort_files(file_names, orientation="last")
+        sorted_files = sorted_files[::-1]
+        file_dates = file_dates[::-1]
 
-    sorted_files, file_dates = sort_files(file_names, orientation="last")
-    sorted_files = sorted_files[::-1]
-    file_dates = file_dates[::-1]
+        print(sorted_files)
+        error_dict = {}
 
-    print(sorted_files)
-    error_dict = {}
+        agg_df = pd.DataFrame()
 
-    agg_df = pd.DataFrame()
-
-    cell_id = folder_path.split('\\')[-1]
-    #print(cell_id)
-    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-    #print(cell_df)
-    cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-    cell_C_rate = cell_df["C_rate"].values[0]
-    cell_temperature = cell_df["Temperature (K)"].values[0]
-    cell_vmax = cell_df["Max_Voltage"].values[0]
-    cell_vmin = cell_df["Min_Voltage"].values[0]
+        cell_id = folder_path.split('\\')[-1]
+        #print(cell_id)
+        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+        #print(cell_df)
+        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+        cell_C_rate = cell_df["C_rate"].values[0]
+        cell_temperature = cell_df["Temperature (K)"].values[0]
+        cell_vmax = cell_df["Max_Voltage"].values[0]
+        cell_vmin = cell_df["Min_Voltage"].values[0]
 
 
 
-    for i_count, file_name in enumerate(file_names): 
-        try: 
-            #print(file_name)
-            file_path   = os.path.join(folder_path, file_name)
-            if file_name.endswith('.txt'):
-                method = 'text'
-            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
-                method = 'excel'
+        for i_count, file_name in enumerate(file_names): 
+            try: 
+                #print(file_name)
+                file_path   = os.path.join(folder_path, file_name)
+                if file_name.endswith('.txt'):
+                    method = 'text'
+                elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+                    method = 'excel'
 
-            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
-            update_df(df, agg_df)
-            agg_df = pd.concat([agg_df, df], ignore_index=True)
+                df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
+                update_df(df, agg_df)
+                agg_df = pd.concat([agg_df, df], ignore_index=True)
 
-        #except add failed files to dictionary with error message
-        except Exception as e:
-            error_dict[file_name] = str(e)
-        
-        print(f'{round(i_count/len(file_names)*100,1)}% Complete')
+            #except add failed files to dictionary with error message
+            except Exception as e:
+                error_dict[file_name] = str(e)
+            
+            print(f'{round(i_count/len(file_names)*100,1)}% Complete')
 
-    #send to df and output: 
-    error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-    error_df.to_csv('error_log.csv', index=False)
-    agg_df.to_csv('aggregated_data.csv', index=False)
-    generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+        #send to df and output: 
+        error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
+        error_df.to_csv('error_log.csv', index=False)
+        agg_df.to_csv('aggregated_data.csv', index=False)
+        generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
 
