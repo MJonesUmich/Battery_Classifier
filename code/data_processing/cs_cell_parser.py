@@ -206,7 +206,7 @@ def check_indices(charge_indices, discharge_indices):
     return complexity, expected_order
 
 
-def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity):
+def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, vmax=None, vmin=None, tolerance=0.01):
     # Downsample to just between charge cycles
     df = df.iloc[charge_indices[0]:discharge_indices[-1] + 1].reset_index(drop=True)
 
@@ -217,9 +217,34 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity):
     # Create a new column for tagging
     df['Cycle_Count'] = None
 
-    # Assign "Charge {i}" tags
-    for i, (start, end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
-        df.loc[start:end - 1, 'Cycle_Count'] = i
+    # Process each cycle to filter out constant voltage holds
+    filtered_cycles = []
+    
+    for i, (charge_start, charge_end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
+        # Get the discharge start for this cycle
+        if i <= len(adjusted_discharge_indices):
+            discharge_start = adjusted_discharge_indices[i-1]
+        else:
+            discharge_start = len(df)
+        
+        # Extract cycle data
+        cycle_data = df.iloc[charge_start:discharge_start].copy()
+        cycle_data['Cycle_Count'] = i
+        
+        # Filter out constant voltage holds if vmax and vmin are provided
+        if vmax is not None and vmin is not None:
+            cycle_data = filter_voltage_range(cycle_data, vmax, vmin, tolerance)
+        
+        if len(cycle_data) > 0:
+            filtered_cycles.append(cycle_data)
+    
+    # Combine all filtered cycles
+    if filtered_cycles:
+        df = pd.concat(filtered_cycles, ignore_index=True)
+    else:
+        # Fallback to original method if no cycles were filtered
+        for i, (start, end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
+            df.loc[start:end - 1, 'Cycle_Count'] = i
 
     #Coloumb count Ah throughput for each cycle
     df['Delta_Time(s)'] = df['Test_Time(s)'].diff().fillna(0)
@@ -229,6 +254,57 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity):
     #now calculate Equivalent Full Cycles (EFC) & Capacity Fade
     df['EFC'] = df['Ah_throughput'] / cell_initial_capacity
     return df
+
+
+def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
+    """
+    Filter cycle data to include only the voltage range between vmin and vmax,
+    excluding constant voltage holds.
+    """
+    if len(cycle_data) == 0:
+        return cycle_data
+    
+    # Find voltage range indices
+    voltage = cycle_data['Voltage(V)'].values
+    current = cycle_data['Current(A)'].values
+    
+    # Find the first point where voltage reaches vmax (during charge)
+    vmax_reached = False
+    vmax_idx = None
+    for i, v in enumerate(voltage):
+        if v >= vmax - tolerance and not vmax_reached:
+            vmax_reached = True
+            vmax_idx = i
+            break
+    
+    # Find the first point where voltage reaches vmin (during discharge)
+    vmin_reached = False
+    vmin_idx = None
+    for i, v in enumerate(voltage):
+        if v <= vmin + tolerance and not vmin_reached:
+            vmin_reached = True
+            vmin_idx = i
+            break
+    
+    # Find discharge start (first negative current)
+    discharge_start = None
+    for i, c in enumerate(current):
+        if c < -tolerance:
+            discharge_start = i
+            break
+    
+    # Filter data based on voltage range
+    if vmax_idx is not None and vmin_idx is not None and discharge_start is not None:
+        # Include charge portion up to vmax and discharge portion from start to vmin
+        charge_portion = cycle_data.iloc[:vmax_idx+1]
+        discharge_portion = cycle_data.iloc[discharge_start:vmin_idx+1]
+        
+        # Combine charge and discharge portions
+        filtered_data = pd.concat([charge_portion, discharge_portion], ignore_index=True)
+        return filtered_data
+    else:
+        # If we can't find proper voltage bounds, return original data
+        return cycle_data
 
 
 def update_df(df, agg_df): 
@@ -242,14 +318,14 @@ def update_df(df, agg_df):
         return df
 
 
-def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel'):
+def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel', vmax=None, vmin=None):
     if method == 'excel': 
         df = load_file(file_path)
     elif method == 'text': 
         df = load_from_text_file(file_path)
 
     charge_indices, discharge_indices = get_indices(df)
-    df = scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity)
+    df = scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, vmax, vmin)
     df["C_rate"] = cell_C_rate
     return df
 
@@ -348,7 +424,7 @@ if __name__ == "__main__":
             elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
                 method = 'excel'
 
-            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
+            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method, cell_vmax, cell_vmin)
             update_df(df, agg_df)
             agg_df = pd.concat([agg_df, df], ignore_index=True)
 
@@ -363,4 +439,3 @@ if __name__ == "__main__":
     error_df.to_csv('error_log.csv', index=False)
     agg_df.to_csv('aggregated_cs_data.csv', index=False)
     generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
-
