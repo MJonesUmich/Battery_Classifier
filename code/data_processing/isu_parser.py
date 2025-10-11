@@ -1,4 +1,4 @@
-isu_parser.pyimport pandas as pd
+import pandas as pd
 import numpy as np 
 import os 
 import json 
@@ -117,6 +117,22 @@ def clip_data(input_df, direction):
     return input_df.iloc[:clip_idx + 1].copy()
 
 
+def monotonicity_check(input_df, direction): 
+    if len(input_df) > 5: 
+
+        if direction == 'charge':
+            valid_profile =  input_df['Voltage(V)'].is_monotonic_increasing
+            valid_profile = True
+
+        elif direction == 'discharge':
+            valid_profile =  input_df['Voltage(V)'].is_monotonic_decreasing
+            valid_profile = True
+    else: 
+        valid_profile = False
+
+    return valid_profile
+
+
 def generate_figures(df_charge, df_discharge, c_rate_charge, c_rate_discharge, temperature, battery_ID, one_fig_only=False):
     for df in [df_charge, df_discharge]: 
         unique_cycles = df['Cycle_Count'].unique()
@@ -182,22 +198,26 @@ for counter, file in enumerate(files):
         #connect to cell infos: 
         cell_id = file.split('.')[0]
         cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-
+        
         #Generate figures only for the near full DOD profile
         if float(cell_df["DoD"]) > 0.9:
             print(file)
             #file = 'G1C1.json'
             cycling_dict = load_cycling_json(file, path)
             df_charge, df_discharge = extract_cycle_data(cycling_dict)
-            cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-            cell_C_rate = cell_df["C_rate"].values[0]
-            cell_C_rate_charge = cell_df["C_rate_Charge"].values[0]
-            cell_C_rate_discharge = cell_df["C_rate_Discharge"].values[0]
+            valid_charge = monotonicity_check(df_charge, direction="charge")
+            valid_discharge = monotonicity_check(df_discharge, direction = "discharge")
+            print(valid_charge,valid_discharge)
+            if valid_charge and valid_discharge: 
+                cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+                cell_C_rate = cell_df["C_rate"].values[0]
+                cell_C_rate_charge = cell_df["C_rate_Charge"].values[0]
+                cell_C_rate_discharge = cell_df["C_rate_Discharge"].values[0]
 
-            cell_temperature = cell_df["Temperature (K)"].values[0]
+                cell_temperature = cell_df["Temperature (K)"].values[0]
 
-            generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_discharge, cell_temperature,
-                            cell_id, one_fig_only=True)
+                generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_discharge, cell_temperature,
+                                cell_id, one_fig_only=True)
             
     except Exception as e:
         tb_str = traceback.format_exc()
