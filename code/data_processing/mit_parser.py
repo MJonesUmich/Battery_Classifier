@@ -4,15 +4,6 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd 
 
-#Load battery mapper data: 
-sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
-url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-meta_df = pd.read_excel(url, sheet_name='Sheet1')     
-
-
-folder = r'C:\Users\MJone\Downloads\archive (2)'
-file = '2017-05-12_batchdata_updated_struct_errorcorrect.mat'
-file_path = os.path.join(folder, file)
 
 def get_largest_index(input_index):
     best_indice = None 
@@ -42,7 +33,8 @@ def split_direction(temp_df):
     charge_stop = []
     discharge_start = []
     discharge_stop = []
-    
+    use_data = False
+
     #Iterate to pull the counters
     for item in range(len(temp_df)): 
         if item < len(temp_df) - 1: 
@@ -73,9 +65,15 @@ def split_direction(temp_df):
         
         df_charge = temp_df[charge_index[0]:charge_index[1]+1]
         df_discharge = temp_df[discharge_index[0]:discharge_index[1]+1]
+
+        if len(df_charge)>0 and len(df_discharge) > 0: 
+            if df_charge["Voltage"].iloc[0] <3 and df_discharge["Voltage"].iloc[0] >3:
+                use_data = True
+
         discharge_indice = clip_cv(df_discharge)
         df_discharge = df_discharge[0:discharge_indice+1]
-    return df_charge, df_discharge 
+
+    return df_charge, df_discharge, use_data
 
 
 def parse_meta_data(meta_df, battery_id_tag):    
@@ -110,57 +108,72 @@ def generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_di
     plt.savefig(save_string)
 
 
-one_fig_only = True
+def run_execution(one_fig_only=True):
 
-with h5py.File(file_path, 'r') as f:
-    batch = f['batch']
-    #print('batch keys: ', batch.keys())
-    num_cells = batch["cycles"].shape[0]
+    with h5py.File(file_path, 'r') as f:
+        batch = f['batch']
+        #print('batch keys: ', batch.keys())
+        num_cells = batch["cycles"].shape[0]
 
-    #cycles_ref = batch['cycles'][0, 0]
-    #print("num cells ", num_cells)
-    for cell_id in range(num_cells):
-        battery_id_tag = file[0:-4] + '_' + str(cell_id)
-        #print('battery_id_tag: ', battery_id_tag)
-        cycles_ref = batch['cycles'][cell_id, 0]
-        # Flatten the list of cycle references (each one is a cycle)
-        if isinstance(cycles_ref, h5py.Reference):
-            cycle_refs = [cycles_ref]
-        else:
-            cycle_refs = cycles_ref.flatten()
+        #cycles_ref = batch['cycles'][0, 0]
+        #print("num cells ", num_cells)
+        for cell_id in range(num_cells):
+            battery_id_tag = file[0:-4] + '_' + str(cell_id)
+            #print('battery_id_tag: ', battery_id_tag)
+            cycles_ref = batch['cycles'][cell_id, 0]
+            # Flatten the list of cycle references (each one is a cycle)
+            if isinstance(cycles_ref, h5py.Reference):
+                cycle_refs = [cycles_ref]
+            else:
+                cycle_refs = cycles_ref.flatten()
 
-        #print(f"Number of cycles: {len(cycle_refs)}")
+            #print(f"Number of cycles: {len(cycle_refs)}")
 
-        for i, ref in enumerate(cycle_refs[:2]):  # limit to first 10 for clarity
-            cycle_group = f[ref]
-            #print(cycle_group.keys())
-            if 'V' not in cycle_group or 't' not in cycle_group:
-                continue  # skip incomplete cycles
+            for i, ref in enumerate(cycle_refs[:2]):  # limit to first 10 for clarity
+                cycle_group = f[ref]
+                #print(cycle_group.keys())
+                if 'V' not in cycle_group or 't' not in cycle_group:
+                    continue  # skip incomplete cycles
 
-            V_refs = cycle_group['V']
-            t_refs = cycle_group['t']
-            i_irefs = cycle_group['I']
+                V_refs = cycle_group['V']
+                t_refs = cycle_group['t']
+                i_irefs = cycle_group['I']
 
-            # Some cycles may have only discharge or only charge
-            for j in range(V_refs.shape[0]):
-                if j == 1: 
-                    V_data = np.array(f[V_refs[j][0]]).squeeze()
-                    i_data = np.array(f[i_irefs[j][0]]).squeeze()
-                    t_data = np.array(f[t_refs[j][0]]).squeeze()
-                    if (len(V_data)==0 or len(i_data)==0 or len(t_data)==0): 
-                        break
-                    else: 
-                        temp_df = pd.DataFrame({'Voltage': V_data, 'Time': t_data, 'Current': i_data})
-                        temp_df['Time'] = temp_df['Time'] * 60
-                        print(type(temp_df), len(temp_df))
-                        df_charge, df_discharge = split_direction(temp_df)
-                        if df_charge is not None and df_discharge is not None: 
-                            cell_C_rate_charge, cell_C_rate_discharge, battery_id_tag, cell_temperature = parse_meta_data(meta_df, battery_id_tag)
+                # Some cycles may have only discharge or only charge
+                for j in range(V_refs.shape[0]):
+                    if j == 1: 
+                        V_data = np.array(f[V_refs[j][0]]).squeeze()
+                        i_data = np.array(f[i_irefs[j][0]]).squeeze()
+                        t_data = np.array(f[t_refs[j][0]]).squeeze()
+                        if (len(V_data)==0 or len(i_data)==0 or len(t_data)==0): 
+                            break
+                        else: 
+                            temp_df = pd.DataFrame({'Voltage': V_data, 'Time': t_data, 'Current': i_data})
+                            temp_df['Time'] = temp_df['Time'] * 60
+                            #print(type(temp_df), len(temp_df))
+                            df_charge, df_discharge, use_charge = split_direction(temp_df)
                             print(f"generating figures for {battery_id_tag}")
-                            generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_discharge, cell_temperature,
-                                            battery_id_tag)
-                            # fig, ax1 = plt.subplots(figsize=(8, 4))
-                            
-                            #Exit function after 1st run if one_fig_only is True
-                            if one_fig_only:
-                                break
+
+                            if df_charge is not None and df_discharge is not None and use_charge == True: 
+                                cell_C_rate_charge, cell_C_rate_discharge, battery_id_tag, cell_temperature = parse_meta_data(meta_df, battery_id_tag)
+                                generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_discharge, cell_temperature,
+                                                battery_id_tag)
+                                # fig, ax1 = plt.subplots(figsize=(8, 4))
+                                
+                                #Exit function after 1st run if one_fig_only is True
+                                if one_fig_only:
+                                    break
+
+
+#Load battery mapper data: 
+sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
+url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+meta_df = pd.read_excel(url, sheet_name='Sheet1')     
+
+folder = r'C:\Users\MJone\Downloads\mit'
+files = os.listdir(folder)
+
+for file in files: 
+    file_path = os.path.join(folder, file)
+    one_fig_only = True
+    run_execution(one_fig_only)
