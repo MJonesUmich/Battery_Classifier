@@ -123,22 +123,25 @@ for folder in desired_folders:
     #send to df and output: 
     agg_df.to_csv('aggregated_data.csv', index=False)
 
+    #Set plot directory
+    out_folder = r'processed_images\NMC'
+    if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
     #generate plot, clipped last datum in case current reset to rest
     plt.figure(figsize=(10, 6))
     plt.plot(charge_df['Charge_Time(s)'], charge_df['Voltage(V)'], color='blue')
     plt.xlabel('Charge Time (s)')
     plt.ylabel('Voltage (V)', color='blue')
     plt.title(f'Cycle {1} Charge Profile')
-    save_string = f"Cycle_{1}_charge_Crate_{cell_C_rate}_tempK_{cell_temperature}_batteryID_{cell_id}.png"
+    save_string = f"{out_folder}\Cycle_{1}_charge_Crate_{cell_C_rate}_tempK_{cell_temperature}_batteryID_{cell_id}.png"
     plt.savefig(save_string)
-    plt.show()
 
     #plot current on secondary axis
     plt.figure(figsize=(10, 6))
     plt.plot(discharge_df['Discharge_Time(s)'], discharge_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
     plt.ylabel('Voltage (V)', color='red')
     plt.title(f'Cycle {1} Discharge Profile')
-    save_string = f"Cycle_{1}_discharge_Crate_{cell_C_rate}_tempK_{cell_temperature}_batteryID_{cell_id}.png"
+    save_string = f"{out_folder}\Cycle_{1}_discharge_Crate_{cell_C_rate}_tempK_{cell_temperature}_batteryID_{cell_id}.png"
     plt.savefig(save_string)
     counter += 1 
-    plt.show()

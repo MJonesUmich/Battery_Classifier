@@ -134,6 +134,10 @@ def monotonicity_check(input_df, direction):
 
 
 def generate_figures(df_charge, df_discharge, c_rate_charge, c_rate_discharge, temperature, battery_ID, one_fig_only=False):
+    out_folder = r'processed_images\NMC'
+    if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
     for df in [df_charge, df_discharge]: 
         unique_cycles = df['Cycle_Count'].unique()
         for i, cycle in enumerate(unique_cycles):
@@ -170,7 +174,7 @@ def generate_figures(df_charge, df_discharge, c_rate_charge, c_rate_discharge, t
                 plt.xlabel(f'{label.capitalize()} Time (s)')
                 plt.ylabel('Voltage (V)', color=color)
                 plt.title(f'Cycle {cycle} {label.capitalize()} Profile')
-                save_string = f"Cycle_{i+1}_{label}_CrateCharge_{c_rate_charge}_CrateDisharge_{c_rate_discharge}_tempK_{temperature}_batteryID_{battery_ID}.png"
+                save_string = f"{out_folder}\Cycle_{i+1}_{label}_CrateCharge_{c_rate_charge}_CrateDisharge_{c_rate_discharge}_tempK_{temperature}_batteryID_{battery_ID}.png"
                 plt.savefig(save_string)
 
                 #Exit function after 1st run if one_fig_only is True

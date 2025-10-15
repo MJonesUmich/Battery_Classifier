@@ -165,7 +165,7 @@ def check_indices(charge_indices, discharge_indices):
             return complexity, expected_order
 
     complexity = "Low"
-    print("Indices alternate correctly.")
+    #print("Indices alternate correctly.")
     return complexity, expected_order
 
 
@@ -236,13 +236,18 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
         discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
         
+        #Set plot directory
+        out_folder = r'processed_images\LCO'
+        if not os.path.exists(out_folder):
+            os.makedirs(out_folder)
+
         #generate plot, clipped last datum in case current reset to rest
         plt.figure(figsize=(10, 6))
         plt.plot(charge_cycle_df['Charge_Time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
         plt.xlabel('Charge Time (s)')
         plt.ylabel('Voltage (V)', color='blue')
         plt.title(f'Cycle {cycle} Charge Profile')
-        save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+        save_string = f"{out_folder}\Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
         plt.savefig(save_string)
 
         #plot current on secondary axis
@@ -250,7 +255,7 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
         plt.ylabel('Voltage (V)', color='red')
         plt.title(f'Cycle {cycle} Discharge Profile')
-        save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+        save_string = f"{out_folder}\Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
         plt.savefig(save_string)
 
         #Exit function after 1st run if one_fig_only is True
@@ -283,7 +288,7 @@ if __name__ == "__main__":
         sorted_files = sorted_files[::-1]
         file_dates = file_dates[::-1]
 
-        print(sorted_files)
+        #print(sorted_files)
         error_dict = {}
 
         agg_df = pd.DataFrame()

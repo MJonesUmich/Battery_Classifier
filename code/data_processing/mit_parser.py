@@ -90,13 +90,17 @@ def parse_meta_data(meta_df, battery_id_tag):
 def generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_discharge, 
                      cell_temperature, battery_id_tag):
     
+    out_folder = r'processed_images\LFP'
+    if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
     #generate plot, clipped last datum in case current reset to rest
     plt.figure(figsize=(10, 6))
     plt.plot(df_charge['Time'], df_charge['Voltage'], color='blue')
     plt.xlabel('Charge Time (s)')
     plt.ylabel('Voltage (V)', color='blue')
     plt.title(f'Cycle {1} Charge Profile')
-    save_string = f"Cycle_{1}_charge_Crate_{cell_C_rate_charge}_tempK_{cell_temperature}_batteryID_{battery_id_tag}.png"
+    save_string = f"{out_folder}\Cycle_{1}_charge_Crate_{cell_C_rate_charge}_tempK_{cell_temperature}_batteryID_{battery_id_tag}.png"
     plt.savefig(save_string)
 
     #plot current on secondary axis
@@ -104,7 +108,7 @@ def generate_figures(df_charge, df_discharge, cell_C_rate_charge, cell_C_rate_di
     plt.plot(df_discharge['Time'], df_discharge['Voltage'], 'r-') #remove last few points to avoid voltage recovery
     plt.ylabel('Voltage (V)', color='red')
     plt.title(f'Cycle {1} Discharge Profile')
-    save_string = f"Cycle_{1}_discharge_Crate_{cell_C_rate_discharge}_tempK_{cell_temperature}_batteryID_{battery_id_tag}.png"
+    save_string = f"{out_folder}\Cycle_{1}_discharge_Crate_{cell_C_rate_discharge}_tempK_{cell_temperature}_batteryID_{battery_id_tag}.png"
     plt.savefig(save_string)
 
 
