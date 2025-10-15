@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime
 
-import CX_parser as cx
+import cx_cell_parser as cx
 
 
 parent_folder_path = r'C:\Users\MJone\Downloads\INR'
