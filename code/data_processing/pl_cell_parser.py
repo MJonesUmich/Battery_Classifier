@@ -495,7 +495,7 @@ if __name__ == "__main__":
         cell_C_rate = 1.0
         cell_temperature = 298.0
         cell_vmax = 4.2
-        cell_vmin = 3.0
+        cell_vmin = 2.75
         print("Using default values for PL data")
     else:
         cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
