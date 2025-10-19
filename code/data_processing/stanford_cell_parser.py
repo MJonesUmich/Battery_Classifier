@@ -112,7 +112,11 @@ def get_charge_discharge_indices(df, voltage_tolerance=0.01):
     V = df["Voltage(V)"]
     
     # Set threshold to avoid 0 current jitter
-    thr = max(0.05 * np.nanmedian(np.abs(I[I != 0])), 1e-4)
+    non_zero_currents = I[I != 0]
+    if len(non_zero_currents) > 0:
+        thr = max(0.05 * np.nanmedian(np.abs(non_zero_currents)), 1e-4)
+    else:
+        thr = 1e-4  # Default threshold when all currents are zero
     
     # Create current sign array
     sign3 = np.zeros_like(I, dtype=int)
@@ -334,9 +338,10 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, vmin, vmax):
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01, one_fig_only=False):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01, one_fig_only=False, images_folder="."):
     """Generate charge/discharge profile plots based on available data"""
     unique_cycles = df['Cycle_Count'].unique()
+    print(f"Processing {len(unique_cycles)} cycles for battery {battery_ID}")
     
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
@@ -350,13 +355,16 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         
         # Check for positive current (charge)
         positive_current = cycle_df[cycle_df['Current(A)'] > tolerance]
-        if len(positive_current) > 0:
+        if len(positive_current) > 10:  # Require at least 10 data points for meaningful charge data
             has_charge_data = True
         
-        # Check for negative current (discharge)
+        # Check for negative current (discharge) with sufficient data points
         negative_current = cycle_df[cycle_df['Current(A)'] < -tolerance]
-        if len(negative_current) > 0:
+        if len(negative_current) > 50:  # Require at least 50 data points for meaningful discharge data
             has_discharge_data = True
+            print(f"Found {len(negative_current)} discharge data points for cycle {cycle}")
+        else:
+            print(f"Skipping discharge plot for cycle {cycle} - only {len(negative_current)} discharge data points (need at least 50)")
         
         # Generate charge plot if charge data exists
         if has_charge_data:
@@ -379,7 +387,8 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
                 plt.ylabel('Voltage (V)', color='blue')
                 plt.title(f'Cycle {cycle} Charge Profile - Stanford LFP')
                 save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_Stanford_{battery_ID}.png"
-                plt.savefig(save_string)
+                save_path = os.path.join(images_folder, save_string)
+                plt.savefig(save_path)
                 plt.close()
         
         # Generate discharge plot if discharge data exists
@@ -408,7 +417,8 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
                 plt.ylabel('Voltage (V)', color='red')
                 plt.title(f'Cycle {cycle} Discharge Profile - Stanford LFP')
                 save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_Stanford_{battery_ID}.png"
-                plt.savefig(save_string)
+                save_path = os.path.join(images_folder, save_string)
+                plt.savefig(save_path)
                 plt.close()
         
         # Exit function after 1st run if one_fig_only is True
@@ -421,9 +431,9 @@ def main():
     meta_df = load_meta_properties()
     
     # Get all Excel files from Stanford battery folder
-    #stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\LFP'
+    stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\LFP'
     #stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\NCA'
-    stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\NMC'
+    #stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\NMC'
     
     # Extract battery type from folder path
     battery_type = os.path.basename(stanford_folder).upper()  # LFP, NCA, or NMC
@@ -456,8 +466,17 @@ def main():
     
     print(f"Found {len(file_groups)} battery groups")
     
+    # Create output folder for this battery type
+    output_folder = f"stanford_{battery_type}"
+    images_folder = os.path.join(output_folder, "images")
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Created output folder: {output_folder}")
+    if not os.path.exists(images_folder):
+        os.makedirs(images_folder)
+        print(f"Created images folder: {images_folder}")
+    
     # Process each group
-    all_aggregated_data = []
     error_dict = {}
     
     for group_key, files in file_groups.items():
@@ -498,22 +517,29 @@ def main():
         if len(agg_df) > 0:
             agg_df['Battery_ID'] = battery_id
             agg_df['Temperature_K'] = temp_k
-            all_aggregated_data.append(agg_df)
+            
+            # Export individual CSV for this battery with only specified fields
+            try:
+                # Select only the required fields and rename Voltage(V) to Voltage(y)
+                export_df = agg_df[['Current(A)', 'Voltage(V)', 'Test_Time(s)', 'Cycle_Count', 'Delta_Time(s)', 'Delta_Ah', 'Ah_throughput', 'EFC', 'C_rate']].copy()
+                export_df = export_df.rename(columns={'Voltage(V)': 'Voltage(y)'})
+                
+                # Create filename for individual battery export (corrected format)
+                individual_filename = f'{battery_id}_{temp_k:.0f}K.csv'
+                individual_filepath = os.path.join(output_folder, individual_filename)
+                export_df.to_csv(individual_filepath, index=False)
+                print(f"Exported individual battery data: {len(export_df)} rows to {individual_filepath}")
+                
+            except Exception as e:
+                print(f"Error exporting individual CSV for {battery_id}: {e}")
             
             # Generate figures for this battery
             try:
-                generate_figures(agg_df, cell_vmax, cell_vmin, files[0]['c_rate'], temp_k, battery_id, one_fig_only=True)
+                generate_figures(agg_df, cell_vmax, cell_vmin, files[0]['c_rate'], temp_k, battery_id, one_fig_only=True, images_folder=images_folder)
             except Exception as e:
                 print(f"Error generating figures for {battery_id}: {e}")
     
-    # Combine all aggregated data
-    if all_aggregated_data:
-        final_agg_df = pd.concat(all_aggregated_data, ignore_index=True)
-        output_filename = f'aggregated_stanford_{battery_type}_data.csv'
-        final_agg_df.to_csv(output_filename, index=False)
-        print(f"\nSaved aggregated data: {len(final_agg_df)} rows to {output_filename}")
-    else:
-        print("No data was successfully processed.")
+    print(f"Processing completed for {battery_type} battery type.")
     
     # Save error log
     if error_dict:
