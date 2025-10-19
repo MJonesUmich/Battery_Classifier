@@ -40,12 +40,6 @@ def sort_files(file_names, orientation='last'):
 
     # Extract dates and sort files
     for file_name in file_names:
-        # #ignore text files 
-        # if file_name.endswith('.txt'):
-        #     continue
-        # #ignore non cycling testsL 
-        # if 'self discharge test' in file_name:
-        #     continue
         file_date = extract_date(file_name, orientation)
         file_dates.append(file_date)
 
@@ -123,12 +117,6 @@ def get_indices(df):
                 elif s == -1:
                     discharge_indices.append(i)
                 prev = s
-
-        # print(len(charge_indices), len(discharge_indices))
-        # print(charge_indices[0], discharge_indices[0])
-        # print(charge_indices[1], discharge_indices[1])
-        # print(charge_indices[2], discharge_indices[2])
-        # print(charge_indices[3], discharge_indices[3])
 
         complexity, expected_order = check_indices(charge_indices, discharge_indices)
         if complexity == "High":
@@ -217,57 +205,170 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel'):
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False, single_cycle=False):
-    unique_cycles = df['Cycle_Count'].unique()
-    for i, cycle in enumerate(unique_cycles):
-        cycle_df = df[df['Cycle_Count'] == cycle]
-        if single_cycle == True: 
-            vmax_idx = cycle_df[cycle_df['Current(A)']>0].index[0]
-            vmin_idx = cycle_df[cycle_df['Current(A)']<0].index[0]
-        else: 
-            #find where voltage first hits vmax and vmin, and where first discharge occurs
-            vmax_idx = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance].index[0]
-            vmin_idx = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance].index[0]
+def interpolate_df(input_df, n_points=100):
+    return input_df
+    direction = input_df.direction.iloc[0] 
+    input_df.drop(columns=['direction'], inplace=True)
+    n_points = 100  # target number of samples
+    old_index = np.linspace(0, 1, len(input_df))
+    new_index = np.linspace(0, 1, n_points)
 
-        #clip data to initial until Vmax, then from discharge start to Vmin
-        disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
-        charge_cycle_df = cycle_df.loc[0:vmax_idx]
-        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx]
+    # Interpolate linearly for all columns
+    df_interp = pd.DataFrame(
+        {col: np.interp(new_index, old_index, input_df[col].to_numpy(dtype=float)) for col in input_df.columns}
+    )    
+    df_interp["direction"] = direction
+    return df_interp
+
+
+def split_charge_discharge(vmax_idx, vmin_idx, iteration_num, cycle_df, vmax, vmin, tolerance=0.01): 
+    #clip data to initial until Vmax, then from discharge start to Vmin
+    disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
+    charge_cycle_df = cycle_df.loc[0:vmax_idx].copy(deep=True)
+    discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx].copy(deep=True)
+    if len(charge_cycle_df)>3 and len(discharge_cycle_df) > 3:
+        output = 'Valid' 
+    else: 
+        output = 'Invalid' 
+
+    if output == 'Valid': 
         charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
         discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
+        charge_cycle_df["direction"] = "charge"
+        discharge_cycle_df["direction"] = "discharge"
+
+        #interpolate charge_cyle & discharge cycle 
+        interp_charge_cycle_df = interpolate_df(charge_cycle_df)
+        interp_discharge_cycle_df = interpolate_df(discharge_cycle_df)
+
+        #Stitch together charge and discharge 
+        end_charge_time = interp_charge_cycle_df["Test_Time(s)"].iloc[-1]
+        interp_discharge_cycle_df["Test_Time(s)"] = interp_discharge_cycle_df["Test_Time(s)"] + end_charge_time 
         
-        #Set plot directory
-        out_folder = r'processed_images\LCO'
-        if not os.path.exists(out_folder):
-            os.makedirs(out_folder)
+        #concat to the cycle df file
+        cycle_df = pd.concat([interp_charge_cycle_df.drop(columns=["Charge_Time(s)"]), 
+                              interp_discharge_cycle_df.drop(columns=["Discharge_Time(s)"]),
+                              ], axis=0)
+        cycle_df["Cycle_Count"] = iteration_num+1 
 
-        #generate plot, clipped last datum in case current reset to rest
-        plt.figure(figsize=(10, 6))
-        plt.plot(charge_cycle_df['Charge_Time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
-        plt.xlabel('Charge Time (s)')
-        plt.ylabel('Voltage (V)', color='blue')
-        plt.title(f'Cycle {cycle} Charge Profile')
-        save_string = f"{out_folder}\Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-        plt.savefig(save_string)
+    else: 
+        interp_charge_cycle_df = None
+        interp_discharge_cycle_df = None
+        cycle_df = None
 
-        #plot current on secondary axis
-        plt.figure(figsize=(10, 6))
-        plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
-        plt.ylabel('Voltage (V)', color='red')
-        plt.title(f'Cycle {cycle} Discharge Profile')
-        save_string = f"{out_folder}\Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-        plt.savefig(save_string)
+    validity = output
 
-        #Exit function after 1st run if one_fig_only is True
-        if one_fig_only:
-            break
+    return interp_charge_cycle_df, interp_discharge_cycle_df, cycle_df, validity 
 
+
+def generate_figures(out_folder, charge_cycle_df, discharge_cycle_df,c_rate, temperature, battery_ID, cycle):
+    #Set plot directory
+    if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
+    #generate plot, clipped last datum in case current reset to rest
+    fig = plt.figure(figsize=(10, 6))
+    plt.plot(charge_cycle_df['Charge_Time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
+    plt.xlabel('Charge Time (s)')
+    plt.ylabel('Voltage (V)', color='blue')
+    plt.title(f'Cycle {cycle} Charge Profile')
+    save_string = f"{out_folder}\Cycle_{cycle}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+    fig.savefig(save_string)
+    plt.close(fig)
+
+    #plot current on secondary axis
+    fig = plt.figure(figsize=(10, 6))
+    plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
+    plt.ylabel('Voltage (V)', color='red')
+    plt.title(f'Cycle {cycle} Discharge Profile')
+    save_string = f"{out_folder}\Cycle_{cycle}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+    fig.savefig(save_string)
+    plt.close(fig)
+
+def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.001):
+    meta_df = load_meta_properties()
+    agg_folder_df = pd.DataFrame()
+    agg_error_df = pd.DataFrame()
+    out_img_folder, out_data_folder = output_folder_paths
+
+    for folder_path in folder_paths: 
+        file_names = [file for file in os.listdir(folder_path)]
+
+        #skip files < 200kb and sort by date of test:  
+        file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
+        sorted_files, file_dates = sort_files(file_names, orientation="last")
+
+        error_dict = {}
+        agg_df = pd.DataFrame()
+
+        cell_id = folder_path.split('\\')[-1]
+        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+        cell_C_rate = cell_df["C_rate"].values[0]
+        cell_temperature = cell_df["Temperature (K)"].values[0]
+        cell_vmax = cell_df["Max_Voltage"].values[0]
+        cell_vmin = cell_df["Min_Voltage"].values[0]
+
+
+        agg_file_df = pd.DataFrame()
+        cycle_counter = 1 
+        for i_count, file_name in enumerate(file_names): 
+            #try: 
+            print('this is the file name: ', file_name)
+            file_path   = os.path.join(folder_path, file_name)
+            if file_name.endswith('.txt'):
+                method = 'text'
+            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+                method = 'excel'
+
+            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
+            unique_cycles = df['Cycle_Count'].unique()
+            agg_cycle_df = pd.DataFrame()
+            for iteration_num, cycle in enumerate(unique_cycles):
+                print('This is the cycle num: ', cycle)
+                cycle_df = df[df['Cycle_Count'] == cycle]
+                vmax_candidates = cycle_df[cycle_df['Voltage(V)'] >= cell_vmax - tolerance]
+                vmin_candidates = cycle_df[cycle_df['Voltage(V)'] <= cell_vmin + tolerance]
+
+                if vmax_candidates.empty or vmin_candidates.empty:
+                    continue
+                else: 
+                    vmax_idx = vmax_candidates.index[0]
+                    vmin_idx = vmin_candidates.index[0]
+                    if len(cycle_df) > 5: 
+                        interp_charge_cycle_df, interp_discharge_cycle_df, inter_cycle_df, validity = split_charge_discharge(vmax_idx, vmin_idx, iteration_num, cycle_df, 
+                                                                                                            cell_vmax, cell_vmin, tolerance=0.01)
+                        if validity != "Valid": 
+                            continue 
+                        else: 
+                            #generate_figures(out_img_folder, interp_charge_cycle_df, interp_discharge_cycle_df,cell_C_rate, cell_temperature, cell_id, cycle_counter)
+                            agg_cycle_df = pd.concat([agg_cycle_df, inter_cycle_df], axis=0, ignore_index=True)
+                            cycle_counter += 1
+            agg_file_df = pd.concat([agg_file_df, agg_cycle_df], axis=0, ignore_index=True)
+            #except add failed files to dictionary with error message
+            # except Exception as e:
+            #     error_dict[file_name] = str(e)
+            
+            print(f'{round(i_count/len(file_names)*100,1)}% Complete')
+
+        #send to df and output: 
+        error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
+        agg_error_df = pd.concat([agg_error_df, error_df],axis=0, ignore_index=True)
+
+        # Export this battery's aggregated data
+        battery_csv_name = f"{cell_id}_aggregated_data.csv"
+        battery_csv_path = os.path.join(out_data_folder, battery_csv_name)
+        agg_file_df.to_csv(battery_csv_path, index=False)
+        print(f'battery_csv file exported to: {battery_csv_path}')
+
+    #Export Datafiles 
+    if not os.path.exists(out_data_folder):
+        os.makedirs(out_data_folder)
+    agg_error_df.to_csv(os.path.join(out_data_folder, 'error_log.csv'), index=False)
 
 
 if __name__ == "__main__": 
     #Example run through on 1 file
-    meta_df = load_meta_properties()
-
     folder_paths = [r'C:\Users\MJone\Downloads\CX_files\CX2_16',
                     r'C:\Users\MJone\Downloads\CX_files\CX2_8',
                     r'C:\Users\MJone\Downloads\CX_files\CX2_33',
@@ -278,55 +379,7 @@ if __name__ == "__main__":
                     r'C:\Users\MJone\Downloads\CX_files\CX2_38',
                     ]
     
-    for folder_path in folder_paths: 
-        file_names = [file for file in os.listdir(folder_path)]
-
-        #skip files < 200kb since they don't have enough data to actually consider:  
-        file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
-
-        sorted_files, file_dates = sort_files(file_names, orientation="last")
-        sorted_files = sorted_files[::-1]
-        file_dates = file_dates[::-1]
-
-        #print(sorted_files)
-        error_dict = {}
-
-        agg_df = pd.DataFrame()
-
-        cell_id = folder_path.split('\\')[-1]
-        #print(cell_id)
-        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-        #print(cell_df)
-        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-        cell_C_rate = cell_df["C_rate"].values[0]
-        cell_temperature = cell_df["Temperature (K)"].values[0]
-        cell_vmax = cell_df["Max_Voltage"].values[0]
-        cell_vmin = cell_df["Min_Voltage"].values[0]
+    process_CX_datafiles(folder_paths, output_folder_paths = [r'processed_images\LCO', r'processed_datasets\LCO'], tolerance=0.001)
 
 
-
-        for i_count, file_name in enumerate(file_names): 
-            try: 
-                #print(file_name)
-                file_path   = os.path.join(folder_path, file_name)
-                if file_name.endswith('.txt'):
-                    method = 'text'
-                elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
-                    method = 'excel'
-
-                df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
-                update_df(df, agg_df)
-                agg_df = pd.concat([agg_df, df], ignore_index=True)
-
-            #except add failed files to dictionary with error message
-            except Exception as e:
-                error_dict[file_name] = str(e)
-            
-            print(f'{round(i_count/len(file_names)*100,1)}% Complete')
-
-        #send to df and output: 
-        error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-        error_df.to_csv('error_log.csv', index=False)
-        agg_df.to_csv('aggregated_data.csv', index=False)
-        generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
-
+#Need to Export: Current(A), Voltage(V), Test_Time(s), Cycle_Count, Delta Time(s), Delta_Ah, Ah_throughput, EFC, C-rate 
