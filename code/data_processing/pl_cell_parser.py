@@ -422,7 +422,7 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel', 
     df["C_rate"] = cell_C_rate
     return df
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01, one_fig_only=False):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01, one_fig_only=False, output_folder=None):
     unique_cycles = df['Cycle_Count'].dropna().unique()
     if len(unique_cycles) == 0:
         print("No valid cycles found for figure generation")
@@ -497,10 +497,14 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
             plt.title(f'Cycle {int(cycle)} Charge Profile (vmin-vmax range)', fontsize=14)
             plt.grid(True, alpha=0.3)
             save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            plt.savefig(save_string, dpi=100, bbox_inches='tight')
+            if output_folder:
+                save_path = os.path.join(output_folder, save_string)
+            else:
+                save_path = save_string
+            plt.savefig(save_path, dpi=100, bbox_inches='tight')
             plt.close()
             generated_charge_plots += 1
-            print(f"   ✓ Saved: {save_string}")
+            print(f"   ✓ Saved: {save_path}")
         
         # Process discharge data (only if we have enough points)
         if len(discharge_cycle_df) >= 10:
@@ -524,10 +528,14 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
             plt.title(f'Cycle {int(cycle)} Discharge Profile (vmin-vmax range)', fontsize=14)
             plt.grid(True, alpha=0.3)
             save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            plt.savefig(save_string, dpi=100, bbox_inches='tight')
+            if output_folder:
+                save_path = os.path.join(output_folder, save_string)
+            else:
+                save_path = save_string
+            plt.savefig(save_path, dpi=100, bbox_inches='tight')
             plt.close()
             generated_discharge_plots += 1
-            print(f"   ✓ Saved: {save_string}")
+            print(f"   ✓ Saved: {save_path}")
 
         # Exit function after 1st cycle if one_fig_only is True
         if one_fig_only:
@@ -643,13 +651,31 @@ if __name__ == "__main__":
         
         print(f'{round(i_count/len(sorted_files)*100,1)}% Complete')
 
+    # Create PL_LCO folder structure
+    pl_lco_folder = 'PL_LCO'
+    images_folder = os.path.join(pl_lco_folder, 'images')
+    os.makedirs(pl_lco_folder, exist_ok=True)
+    os.makedirs(images_folder, exist_ok=True)
+    
     #send to df and output: 
     error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-    error_df.to_csv('error_log.csv', index=False)
-    agg_df.to_csv('aggregated_pl_data.csv', index=False)
+    error_df.to_csv('pl_error_log.csv', index=False)
     
-    # Generate figures using the last processed file's data
+    # Export individual CSV for this battery with specified fields
     if not agg_df.empty:
-        generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+        # Select only the required fields
+        required_fields = ['Current(A)', 'Voltage(V)', 'Test_Time(s)', 'Cycle_Count', 'Delta_Time(s)', 'Delta_Ah', 'Ah_throughput', 'EFC', 'C_rate']
+        available_fields = [field for field in required_fields if field in agg_df.columns]
+        export_df = agg_df[available_fields].copy()
+        
+        # Create filename based on battery ID and temperature
+        temp_k = int(cell_temperature)
+        csv_filename = f"PL_LCO_{cell_id}_{temp_k}K.csv"
+        csv_path = os.path.join(pl_lco_folder, csv_filename)
+        export_df.to_csv(csv_path, index=False)
+        print(f"Exported individual CSV: {csv_path}")
+        
+        # Generate figures and save to images subfolder
+        generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True, output_folder=images_folder)
     else:
         print("No data available for figure generation")
