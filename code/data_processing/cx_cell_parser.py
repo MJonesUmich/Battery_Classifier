@@ -344,7 +344,7 @@ def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.00
                         if validity != "Valid": 
                             continue 
                         else: 
-                            #generate_figures(out_img_folder, interp_charge_cycle_df, interp_discharge_cycle_df,cell_C_rate, cell_temperature, cell_id, cycle_counter)
+                            generate_figures(out_img_folder, interp_charge_cycle_df, interp_discharge_cycle_df,cell_C_rate, cell_temperature, cell_id, cycle_counter)
                             agg_cycle_df = pd.concat([agg_cycle_df, inter_cycle_df], axis=0, ignore_index=True)
                             cycle_counter += 1
             agg_file_df = pd.concat([agg_file_df, agg_cycle_df], axis=0, ignore_index=True)
