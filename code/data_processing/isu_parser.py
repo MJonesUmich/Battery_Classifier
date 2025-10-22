@@ -149,7 +149,8 @@ def generate_figures(output_image_folder, charge_cycle_df, discharge_cycle_df,C_
 
     #generate plot, clipped last datum in case current reset to rest
     fig = plt.figure(figsize=(10, 6))
-    plt.plot(charge_cycle_df['Test_Time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
+    charge_cycle_df["step_time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0] 
+    plt.plot(charge_cycle_df['step_time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
     plt.xlabel('Charge Time (s)')
     plt.ylabel('Voltage (V)', color='blue')
     plt.title(f'Cycle {cycle} Charge Profile')
@@ -160,7 +161,8 @@ def generate_figures(output_image_folder, charge_cycle_df, discharge_cycle_df,C_
 
     #plot current on secondary axis
     fig = plt.figure(figsize=(10, 6))
-    plt.plot(discharge_cycle_df['Test_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
+    discharge_cycle_df["step_time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0] 
+    plt.plot(discharge_cycle_df['step_time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
     plt.ylabel('Voltage (V)', color='red')
     plt.title(f'Cycle {cycle} Discharge Profile')
     save_string = f"{output_image_folder}\Cycle_{cycle}_discharge_Crate_{C_rate_discharge}_tempK_{temperature}_batteryID_{battery_ID}.png"
