@@ -149,6 +149,9 @@ def generate_figures(output_image_folder, charge_cycle_df, discharge_cycle_df,C_
 
     #generate plot, clipped last datum in case current reset to rest
     fig = plt.figure(figsize=(10, 6))
+    charge_cycle_df = charge_cycle_df.copy()
+    discharge_cycle_df = discharge_cycle_df.copy()
+
     charge_cycle_df["step_time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0] 
     plt.plot(charge_cycle_df['step_time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
     plt.xlabel('Charge Time (s)')
@@ -188,19 +191,23 @@ def scrub_cycles(input_df, cell_C_rate_charge, cell_C_rate_discharge, cell_id, c
             include_data = False
 
         if include_data:
-            charge_clip_df = clip_data(df_charge, direction="charge")
-            discharge_clip_df = clip_data(df_discharge, direction="discharge")
+            try:
+                #clip data to avoid rest periods and constant-voltage conditions
+                charge_clip_df = clip_data(df_charge, direction="charge")
+                discharge_clip_df = clip_data(df_discharge, direction="discharge")
 
-            #now generate plot data
-            generate_figures(output_image_folder, df_charge, df_discharge,
-                             cell_C_rate_charge, cell_C_rate_discharge, cell_temperature, 
-                             cell_id, cycle)
-            output_df = pd.concat([output_df, charge_clip_df, discharge_clip_df], ignore_index=True)
+                #now generate plot data
+                generate_figures(output_image_folder, df_charge, df_discharge,
+                                cell_C_rate_charge, cell_C_rate_discharge, cell_temperature, 
+                                cell_id, cycle)
+                output_df = pd.concat([output_df, charge_clip_df, discharge_clip_df], ignore_index=True)
+            except Exception as e:
+                continue
 
     output_df = output_df.sort_values(by=["Cycle_Count", "direction", "Test_Time(s)"], 
                                     ascending=[True, True, True]).reset_index(drop=True)
     return output_df
-
+ 
 
 def isu_parser(input_data_folder, output_folder_paths):
     output_data_folder, output_image_folder = output_folder_paths
