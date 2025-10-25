@@ -5,7 +5,7 @@ import json
 import matplotlib.pyplot as plt 
 import traceback
 
-import CX_parser as cx
+import cx_cell_parser as cx
  
 
 def load_cycling_json(file, path):
