@@ -66,7 +66,7 @@ def gen_bat_df(input_path, input_file):
                 if all_cycles_data:
                     # Combine all cycles and save with reduced memory footprint
                     cell_df = pd.concat(all_cycles_data, ignore_index=True)
-                    cell_df["Ah_throughput"] = cell_df["Delta_Ah"].cumsum().astype(np.float32)
+                    cell_df["Ah_throughput"] = np.abs(cell_df["Delta_Ah"]).cumsum().astype(np.float32)
                     cell_df["EFC"] = (cell_df["Ah_throughput"] / bol_cap).astype(np.float32)  # BOL 1.1Ah capacity
                     
                     output_df = cell_df.copy()
