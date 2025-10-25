@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd 
 
-import CX_parser as cx
+import cx_cell_parser as cx
 
 
 def gen_bat_df(input_path, input_file):
