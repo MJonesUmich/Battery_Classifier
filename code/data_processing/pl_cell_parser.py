@@ -247,6 +247,8 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, 
     # Process each cycle to filter out constant voltage holds
     filtered_cycles = []
     
+    print(f"Processing {len(adjusted_charge_indices)} cycles with vmax={vmax}, vmin={vmin}")
+    
     for i, (charge_start, charge_end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
         # Get the discharge start for this cycle
         if i <= len(adjusted_discharge_indices):
@@ -258,9 +260,15 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, 
         cycle_data = df.iloc[charge_start:discharge_start].copy()
         cycle_data['Cycle_Count'] = i
         
+        print(f"\nCycle {i}: {len(cycle_data)} points before filtering")
+        
         # Filter out constant voltage holds if vmax and vmin are provided
         if vmax is not None and vmin is not None:
+            print(f"  Calling filter_voltage_range...")
             cycle_data = filter_voltage_range(cycle_data, vmax, vmin, tolerance)
+            print(f"  After filtering: {len(cycle_data)} points, has Phase column: {'Phase' in cycle_data.columns}")
+        else:
+            print(f"  Skipping filter_voltage_range (vmax={vmax}, vmin={vmin})")
         
         if len(cycle_data) > 0:
             filtered_cycles.append(cycle_data)
@@ -286,7 +294,7 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, 
 def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
     """
     Filter cycle data to include only the voltage range between vmin and vmax,
-    excluding constant voltage holds.
+    excluding constant voltage holds. Also adds a Phase column to mark charge/discharge.
     """
     if len(cycle_data) == 0:
         return cycle_data
@@ -294,6 +302,10 @@ def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
     # Find voltage range indices
     voltage = cycle_data['Voltage(V)'].values
     current = cycle_data['Current(A)'].values
+    
+    # Debug: Check current range
+    print(f"  Current range in cycle: {current.min():.4f} to {current.max():.4f} A")
+    print(f"  Positive current points: {np.sum(current > tolerance)}, Negative current points: {np.sum(current < -tolerance)}")
     
     # Find the first point where voltage reaches vmax (during charge)
     vmax_reached = False
@@ -323,14 +335,31 @@ def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
     # Filter data based on voltage range
     if vmax_idx is not None and vmin_idx is not None and discharge_start is not None:
         # Include charge portion up to vmax and discharge portion from start to vmin
-        charge_portion = cycle_data.iloc[:vmax_idx+1]
-        discharge_portion = cycle_data.iloc[discharge_start:vmin_idx+1]
+        charge_portion = cycle_data.iloc[:vmax_idx+1].copy()
+        discharge_portion = cycle_data.iloc[discharge_start:vmin_idx+1].copy()
+        
+        # Mark the phase for each portion
+        charge_portion['Phase'] = 'Charge'
+        discharge_portion['Phase'] = 'Discharge'
+        
+        # Debug output
+        print(f"  Charge portion: {len(charge_portion)} points (index 0 to {vmax_idx})")
+        print(f"  Discharge portion: {len(discharge_portion)} points (index {discharge_start} to {vmin_idx})")
         
         # Combine charge and discharge portions
         filtered_data = pd.concat([charge_portion, discharge_portion], ignore_index=True)
+        print(f"  Total filtered data: {len(filtered_data)} points (Charge: {np.sum(filtered_data['Phase']=='Charge')}, Discharge: {np.sum(filtered_data['Phase']=='Discharge')})")
         return filtered_data
     else:
-        # If we can't find proper voltage bounds, return original data
+        # If we can't find proper voltage bounds, return original data with phase marking
+        print(f"  Warning: Could not find vmax_idx={vmax_idx}, vmin_idx={vmin_idx}, discharge_start={discharge_start}")
+        print(f"  Falling back to current-based phase marking")
+        cycle_data = cycle_data.copy()
+        cycle_data['Phase'] = cycle_data['Current(A)'].apply(
+            lambda x: 'Charge' if x > tolerance else ('Discharge' if x < -tolerance else 'Rest')
+        )
+        phase_counts = cycle_data['Phase'].value_counts()
+        print(f"  Phase distribution: {phase_counts.to_dict()}")
         return cycle_data
 
 
@@ -393,60 +422,136 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel', 
     df["C_rate"] = cell_C_rate
     return df
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01, one_fig_only=False, output_folder=None):
     unique_cycles = df['Cycle_Count'].dropna().unique()
     if len(unique_cycles) == 0:
         print("No valid cycles found for figure generation")
         return
+    
+    # Track generated plots
+    generated_charge_plots = 0
+    generated_discharge_plots = 0
         
     for i, cycle in enumerate(unique_cycles):
-        cycle_df = df[df['Cycle_Count'] == cycle]
+        cycle_df = df[df['Cycle_Count'] == cycle].copy()
         
-        #find where voltage first hits vmax and vmin, and where first discharge occurs
-        try:
-            vmax_idx = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance].index[0]
-        except IndexError:
-            print(f"Warning: No voltage >= {vmax - tolerance} found in cycle {cycle}, using maximum voltage point...")
-            vmax_idx = cycle_df['Voltage(V)'].idxmax()
+        if len(cycle_df) == 0:
+            print(f"Warning: No data found for cycle {cycle}")
+            continue
+        
+        print(f"\n=== Processing Cycle {cycle} for figures ===")
+        print(f"Total cycle data: {len(cycle_df)} points")
+        
+        # Separate charge and discharge based on Phase column (if available) or current
+        if 'Phase' in cycle_df.columns:
+            print(f"Using Phase column to separate charge/discharge")
+            phase_counts = cycle_df['Phase'].value_counts()
+            print(f"Phase distribution: {phase_counts.to_dict()}")
+            charge_cycle_df = cycle_df[cycle_df['Phase'] == 'Charge'].copy()
+            discharge_cycle_df = cycle_df[cycle_df['Phase'] == 'Discharge'].copy()
+        else:
+            # Fallback to current-based separation
+            print(f"Using current to separate charge/discharge (no Phase column)")
+            charge_mask = cycle_df['Current(A)'] > tolerance
+            discharge_mask = cycle_df['Current(A)'] < -tolerance
+            charge_cycle_df = cycle_df[charge_mask].copy()
+            discharge_cycle_df = cycle_df[discharge_mask].copy()
+            print(f"Charge points: {np.sum(charge_mask)}, Discharge points: {np.sum(discharge_mask)}")
+        
+        # Check charge data
+        if len(charge_cycle_df) == 0:
+            print(f"⚠️  Cycle {cycle}: No charge data found - charge plot will NOT be generated")
+        elif len(charge_cycle_df) < 10:
+            print(f"⚠️  Cycle {cycle}: Insufficient charge data ({len(charge_cycle_df)} points) - charge plot will NOT be generated")
+            print(f"    Reason: This appears to be a discharge-only test (e.g., capacity measurement)")
+        else:
+            print(f"✓  Cycle {cycle}: Sufficient charge data ({len(charge_cycle_df)} points) - charge plot will be generated")
             
-        try:
-            vmin_idx = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance].index[0]
-        except IndexError:
-            print(f"Warning: No voltage <= {vmin + tolerance} found in cycle {cycle}, using minimum voltage point...")
-            vmin_idx = cycle_df['Voltage(V)'].idxmin()
+        # Check discharge data
+        if len(discharge_cycle_df) == 0:
+            print(f"⚠️  Cycle {cycle}: No discharge data found - discharge plot will NOT be generated")
+        elif len(discharge_cycle_df) < 10:
+            print(f"⚠️  Cycle {cycle}: Insufficient discharge data ({len(discharge_cycle_df)} points) - discharge plot will NOT be generated")
+        else:
+            print(f"✓  Cycle {cycle}: Sufficient discharge data ({len(discharge_cycle_df)} points) - discharge plot will be generated")
             
-        try:
-            disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0]
-        except IndexError:
-            print(f"Warning: No discharge current found in cycle {cycle}, skipping...")
-            continue 
+        # Process charge data (only if we have enough points)
+        if len(charge_cycle_df) >= 10:
+            # Data is already in correct order from filter_voltage_range
+            # Calculate relative time from the start
+            charge_cycle_df = charge_cycle_df.reset_index(drop=True)
+            if charge_cycle_df['Test_Time(s)'].iloc[0] is not None:
+                charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
+            else:
+                charge_cycle_df["Charge_Time(s)"] = range(len(charge_cycle_df))
+            
+            # Debug output
+            print(f"Cycle {cycle}: Charge data points: {len(charge_cycle_df)}, Voltage range: {charge_cycle_df['Voltage(V)'].min():.3f} - {charge_cycle_df['Voltage(V)'].max():.3f}V")
+            print(f"  Time range: {charge_cycle_df['Charge_Time(s)'].min():.1f} - {charge_cycle_df['Charge_Time(s)'].max():.1f}s")
+            
+            # Generate charge plot
+            plt.figure(figsize=(10, 6))
+            plt.plot(charge_cycle_df['Charge_Time(s)'], charge_cycle_df['Voltage(V)'], 'b-', linewidth=2)
+            plt.xlabel('Charge Time (s)', fontsize=12)
+            plt.ylabel('Voltage (V)', fontsize=12)
+            plt.title(f'Cycle {int(cycle)} Charge Profile (vmin-vmax range)', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+            if output_folder:
+                save_path = os.path.join(output_folder, save_string)
+            else:
+                save_path = save_string
+            plt.savefig(save_path, dpi=100, bbox_inches='tight')
+            plt.close()
+            generated_charge_plots += 1
+            print(f"   ✓ Saved: {save_path}")
         
-        #clip data to initial until Vmax, then from discharge start to Vmin
-        charge_cycle_df = cycle_df.loc[0:vmax_idx]
-        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx]
-        charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
-        discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
-        
-        #generate plot, clipped last datum in case current reset to rest
-        plt.figure(figsize=(10, 6))
-        plt.plot(charge_cycle_df['Charge_Time(s)'], charge_cycle_df['Voltage(V)'], color='blue')
-        plt.xlabel('Charge Time (s)')
-        plt.ylabel('Voltage (V)', color='blue')
-        plt.title(f'Cycle {cycle} Charge Profile')
-        save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-        plt.savefig(save_string)
+        # Process discharge data (only if we have enough points)
+        if len(discharge_cycle_df) >= 10:
+            # Data is already in correct order from filter_voltage_range
+            # Calculate relative time from the start
+            discharge_cycle_df = discharge_cycle_df.reset_index(drop=True)
+            if discharge_cycle_df['Test_Time(s)'].iloc[0] is not None:
+                discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
+            else:
+                discharge_cycle_df["Discharge_Time(s)"] = range(len(discharge_cycle_df))
+            
+            # Debug output
+            print(f"Cycle {cycle}: Discharge data points: {len(discharge_cycle_df)}, Voltage range: {discharge_cycle_df['Voltage(V)'].min():.3f} - {discharge_cycle_df['Voltage(V)'].max():.3f}V")
+            print(f"  Time range: {discharge_cycle_df['Discharge_Time(s)'].min():.1f} - {discharge_cycle_df['Discharge_Time(s)'].max():.1f}s")
+            
+            # Generate discharge plot
+            plt.figure(figsize=(10, 6))
+            plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-', linewidth=2)
+            plt.xlabel('Discharge Time (s)', fontsize=12)
+            plt.ylabel('Voltage (V)', fontsize=12)
+            plt.title(f'Cycle {int(cycle)} Discharge Profile (vmin-vmax range)', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+            if output_folder:
+                save_path = os.path.join(output_folder, save_string)
+            else:
+                save_path = save_string
+            plt.savefig(save_path, dpi=100, bbox_inches='tight')
+            plt.close()
+            generated_discharge_plots += 1
+            print(f"   ✓ Saved: {save_path}")
 
-        #plot current on secondary axis
-        plt.figure(figsize=(10, 6))
-        plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
-        plt.ylabel('Voltage (V)', color='red')
-        plt.title(f'Cycle {cycle} Discharge Profile')
-        save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-        plt.savefig(save_string)
-
-        #Exit function after 1st run if one_fig_only is True
+        # Exit function after 1st cycle if one_fig_only is True
         if one_fig_only:
             break
+    
+    # Print summary
+    print(f"\n{'='*70}")
+    print(f"FIGURE GENERATION SUMMARY for {battery_ID}")
+    print(f"{'='*70}")
+    print(f"  Charge plots generated:    {generated_charge_plots}")
+    print(f"  Discharge plots generated: {generated_discharge_plots}")
+    print(f"  Total plots generated:     {generated_charge_plots + generated_discharge_plots}")
+    if generated_charge_plots == 0:
+        print(f"\n  ℹ️  Note: No charge plots were generated because this dataset contains")
+        print(f"     discharge-only data (typical for capacity fade measurements).")
+    print(f"{'='*70}\n")
 
 
 if __name__ == "__main__": 
@@ -481,12 +586,22 @@ if __name__ == "__main__":
 
     agg_df = pd.DataFrame()
 
-    # Derive Battery ID from folder name (e.g., "Capacity_25C" -> "PL")
-    cell_id = "PL"  # Default for PL data
-
+    # Derive Battery ID from folder name (e.g., "Capacity_25C")
+    # Extract the folder name from the path
+    folder_name = os.path.basename(folder_path)
+    cell_id = folder_name  # Use folder name as Battery_ID
+    
+    # Fallback to "PL" if folder name not in metadata
     print(f"Looking for battery ID: {cell_id}")
-    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+    cell_df = meta_df[meta_df["Battery_ID"] == cell_id]
     print(f"Found {len(cell_df)} matching records")
+    
+    if len(cell_df) == 0:
+        # Try with "PL" prefix
+        cell_id_with_prefix = f"PL_{folder_name}"
+        print(f"Trying alternative battery ID: {cell_id_with_prefix}")
+        cell_df = meta_df[meta_df["Battery_ID"] == cell_id_with_prefix]
+        print(f"Found {len(cell_df)} matching records")
     
     if len(cell_df) == 0:
         print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
@@ -536,13 +651,31 @@ if __name__ == "__main__":
         
         print(f'{round(i_count/len(sorted_files)*100,1)}% Complete')
 
+    # Create PL_LCO folder structure
+    pl_lco_folder = 'PL_LCO'
+    images_folder = os.path.join(pl_lco_folder, 'images')
+    os.makedirs(pl_lco_folder, exist_ok=True)
+    os.makedirs(images_folder, exist_ok=True)
+    
     #send to df and output: 
     error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-    error_df.to_csv('error_log.csv', index=False)
-    agg_df.to_csv('aggregated_pl_data.csv', index=False)
+    error_df.to_csv('pl_error_log.csv', index=False)
     
-    # Generate figures using the last processed file's data
+    # Export individual CSV for this battery with specified fields
     if not agg_df.empty:
-        generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
+        # Select only the required fields
+        required_fields = ['Current(A)', 'Voltage(V)', 'Test_Time(s)', 'Cycle_Count', 'Delta_Time(s)', 'Delta_Ah', 'Ah_throughput', 'EFC', 'C_rate']
+        available_fields = [field for field in required_fields if field in agg_df.columns]
+        export_df = agg_df[available_fields].copy()
+        
+        # Create filename based on battery ID and temperature
+        temp_k = int(cell_temperature)
+        csv_filename = f"PL_LCO_{cell_id}_{temp_k}K.csv"
+        csv_path = os.path.join(pl_lco_folder, csv_filename)
+        export_df.to_csv(csv_path, index=False)
+        print(f"Exported individual CSV: {csv_path}")
+        
+        # Generate figures and save to images subfolder
+        generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True, output_folder=images_folder)
     else:
         print("No data available for figure generation")

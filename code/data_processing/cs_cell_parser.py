@@ -330,7 +330,7 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel', 
     return df
 
 
-def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=0.01,one_fig_only=False):
+def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, output_dir, tolerance=0.01, one_fig_only=False):
     unique_cycles = df['Cycle_Count'].unique()
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
@@ -341,8 +341,8 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
         
         #clip data to initial until Vmax, then from discharge start to Vmin
-        charge_cycle_df = cycle_df.loc[0:vmax_idx]
-        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx]
+        charge_cycle_df = cycle_df.loc[0:vmax_idx].copy()
+        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx].copy()
         charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
         discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
         
@@ -352,16 +352,18 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, tolerance=
         plt.xlabel('Charge Time (s)')
         plt.ylabel('Voltage (V)', color='blue')
         plt.title(f'Cycle {cycle} Charge Profile')
-        save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+        save_string = os.path.join(output_dir, f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png")
         plt.savefig(save_string)
+        plt.close()
 
         #plot current on secondary axis
         plt.figure(figsize=(10, 6))
         plt.plot(discharge_cycle_df['Discharge_Time(s)'], discharge_cycle_df['Voltage(V)'], 'r-') #remove last few points to avoid voltage recovery
         plt.ylabel('Voltage (V)', color='red')
         plt.title(f'Cycle {cycle} Discharge Profile')
-        save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+        save_string = os.path.join(output_dir, f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png")
         plt.savefig(save_string)
+        plt.close()
 
         #Exit function after 1st run if one_fig_only is True
         if one_fig_only:
@@ -413,7 +415,11 @@ if __name__ == "__main__":
     cell_vmax = cell_df["Max_Voltage"].values[0]
     cell_vmin = cell_df["Min_Voltage"].values[0]
 
-
+    # Create output directories
+    output_base_dir = "CS2_LCO"
+    images_dir = os.path.join(output_base_dir, "images")
+    os.makedirs(output_base_dir, exist_ok=True)
+    os.makedirs(images_dir, exist_ok=True)
 
     for i_count, file_name in enumerate(file_names): 
         try: 
@@ -434,8 +440,23 @@ if __name__ == "__main__":
         
         print(f'{round(i_count/len(file_names)*100,1)}% Complete')
 
-    #send to df and output: 
+    # Create CSV with only required columns
+    required_columns = ["Current(A)", "Voltage(V)", "Test_Time(s)", "Cycle_Count", "Delta_Time(s)", "Delta_Ah", "Ah_throughput", "EFC", "C_rate"]
+    available_columns = [col for col in required_columns if col in agg_df.columns]
+    output_df = agg_df[available_columns]
+    
+    # Generate output filename
+    temperature_str = f"{int(cell_temperature)}K"
+    csv_filename = f"CS2_LCO_{cell_id}_{temperature_str}.csv"
+    csv_path = os.path.join(output_base_dir, csv_filename)
+    
+    # Save CSV file
+    output_df.to_csv(csv_path, index=False)
+    print(f"Saved CSV file: {csv_path}")
+    
+    # Generate figures and save to images directory
+    generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, output_dir=images_dir, one_fig_only=True)
+    
+    # Save error log
     error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
     error_df.to_csv('error_log.csv', index=False)
-    agg_df.to_csv('aggregated_cs_data.csv', index=False)
-    generate_figures(df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, one_fig_only=True)
