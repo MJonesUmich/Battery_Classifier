@@ -117,26 +117,38 @@ def generate_figures(output_image_folder, df_charge, df_discharge,
     plt.savefig(save_string)
     plt.close()
 
-def clip_cv(input_df, direction): 
-    stop_index = None
-    indice = 1
-    if direction == 'discharge':
-        while stop_index is None: 
-            delta_current = np.abs(input_df["Current(A)"].iloc[indice] - input_df["Current(A)"].iloc[indice-1])
-            if delta_current > 0.5:
-                if input_df["Voltage(V)"].iloc[indice] <= 2.5 or input_df["Voltage(V)"].iloc[indice-1] <= 2.5: 
-                    stop_index = indice
-            indice += 1
-    elif direction == 'charge':
-        while stop_index is None: 
-            delta_current = np.abs(input_df["Current(A)"].iloc[indice] - input_df["Current(A)"].iloc[indice-1])
-            if delta_current > 0.5:
-                if input_df["Voltage(V)"].iloc[indice] >= 3.5 or input_df["Voltage(V)"].iloc[indice-1] >= 3.5:
-                    stop_index = indice
-            indice += 1
+def clip_cv(input_df, direction):
+    """Vectorized clipping: find first index where delta-current > 0.5 AND voltage crosses threshold.
+    If no trigger found, return the full input_df unchanged.
+    """
+    if input_df.shape[0] < 2:
+        return input_df.copy()
 
-    clipped_df = input_df[0:stop_index+1]
-    return clipped_df
+    curr = input_df["Current(A)"].to_numpy(dtype=float)
+    volt = input_df["Voltage(V)"].to_numpy(dtype=float)
+
+    # delta_current at position i corresponds to abs(curr[i] - curr[i-1]); set first element to 0
+    delta_curr = np.abs(np.concatenate(([0.0], np.diff(curr))))
+
+    # previous-voltage array (volt[i-1]) with first element = volt[0]
+    volt_prev = np.concatenate(([volt[0]], volt[:-1]))
+
+    if direction == 'discharge':
+        # trigger when delta_current > 0.5 and either current or previous voltage <= 2.5
+        mask = (delta_curr > 0.5) & ((volt <= 2.5) | (volt_prev <= 2.5))
+    elif direction == 'charge':
+        # trigger when delta_current > 0.5 and either current or previous voltage >= 3.5
+        mask = (delta_curr > 0.5) & ((volt >= 3.5) | (volt_prev >= 3.5))
+    else:
+        return input_df.copy()
+
+    idxs = np.where(mask)[0]
+    if idxs.size == 0:
+        # no trigger found -> return full dataframe
+        return input_df.copy()
+
+    stop_index = int(idxs[0])
+    return input_df.iloc[: stop_index + 1].reset_index(drop=True)
 
 
 def parse_meta_data(meta_df=None, battery_id_tag=None):    
