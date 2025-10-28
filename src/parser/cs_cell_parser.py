@@ -1,14 +1,56 @@
 import os
 import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from utils.help_function import load_meta_properties
+
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for CS2 data processing."""
+
+    base_data_path: str = "assets/raw_data/CS2"
+    output_data_path: str = "processed_datasets/LCO"
+    output_images_path: str = "processed_images/LCO"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
 
 
 def extract_date(file_name, orientation="last"):
@@ -205,7 +247,6 @@ def check_indices(charge_indices, discharge_indices):
             return complexity, expected_order
 
     complexity = "Low"
-    print("Indices alternate correctly.")
     return complexity, expected_order
 
 
@@ -353,8 +394,10 @@ def parse_file(
     return df
 
 
-def generate_figures(
-    df,
+def generate_single_cycle_figures(
+    cycle_data,
+    cycle,
+    cycle_index,
     vmax,
     vmin,
     c_rate,
@@ -362,20 +405,10 @@ def generate_figures(
     battery_ID,
     output_dir,
     tolerance=0.01,
-    one_fig_only=False,
 ):
-    unique_cycles = df["Cycle_Count"].unique()
-
-    # If vmax or vmin are None or invalid, calculate from data
-    if vmax is None or vmin is None or vmax <= 0 or vmin <= 0:
-        data_vmax = df["Voltage(V)"].max()
-        data_vmin = df["Voltage(V)"].min()
-        vmax = data_vmax * 0.95  # Use 95% of max voltage
-        vmin = data_vmin * 1.05  # Use 105% of min voltage
-        print(f"Using calculated voltage limits: vmax={vmax:.3f}V, vmin={vmin:.3f}V")
-
-    for i, cycle in enumerate(unique_cycles):
-        cycle_df = df[df["Cycle_Count"] == cycle]
+    """Generate figures for a single cycle - designed for multithreading."""
+    try:
+        cycle_df = cycle_data
 
         # find where voltage first hits vmax and vmin, and where first discharge occurs
         vmax_matches = cycle_df[cycle_df["Voltage(V)"] >= vmax - tolerance]
@@ -384,7 +417,7 @@ def generate_figures(
 
         if len(vmax_matches) == 0 or len(vmin_matches) == 0 or len(disch_matches) == 0:
             print(f"Skipping cycle {cycle} - missing required voltage/current data")
-            continue
+            return
 
         vmax_idx = vmax_matches.index[0]
         vmin_idx = vmin_matches.index[0]
@@ -397,7 +430,7 @@ def generate_figures(
         # Check if we have valid data for plotting
         if len(charge_cycle_df) < 2 or len(discharge_cycle_df) < 2:
             print(f"Skipping cycle {cycle} - insufficient data points after filtering")
-            continue
+            return
 
         # Calculate relative time for charge and discharge cycles
         if len(charge_cycle_df) > 0:
@@ -412,7 +445,7 @@ def generate_figures(
             )
 
         # generate plot, clipped last datum in case current reset to rest
-        plt.figure(figsize=(10, 6))
+        fig1 = plt.figure(figsize=(10, 6))
         plt.plot(
             charge_cycle_df["Charge_Time(s)"],
             charge_cycle_df["Voltage(V)"],
@@ -423,13 +456,13 @@ def generate_figures(
         plt.title(f"Cycle {cycle} Charge Profile")
         save_string = os.path.join(
             output_dir,
-            f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
+            f"Cycle_{cycle_index+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
         )
-        plt.savefig(save_string)
-        plt.close()
+        plt.savefig(save_string, dpi=100, bbox_inches="tight")
+        plt.close(fig1)
 
         # plot current on secondary axis
-        plt.figure(figsize=(10, 6))
+        fig2 = plt.figure(figsize=(10, 6))
         plt.plot(
             discharge_cycle_df["Discharge_Time(s)"],
             discharge_cycle_df["Voltage(V)"],
@@ -439,164 +472,321 @@ def generate_figures(
         plt.title(f"Cycle {cycle} Discharge Profile")
         save_string = os.path.join(
             output_dir,
-            f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
+            f"Cycle_{cycle_index+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
         )
-        plt.savefig(save_string)
-        plt.close()
+        plt.savefig(save_string, dpi=100, bbox_inches="tight")
+        plt.close(fig2)
 
-        # Exit function after 1st run if one_fig_only is True
-        if one_fig_only:
-            break
+    except Exception as e:
+        print(f"Error generating figures for cycle {cycle}: {str(e)}")
 
 
-def main():
-    # Process all CS2 subfolders
-    meta_df = load_meta_properties()
+def generate_figures(
+    df,
+    vmax,
+    vmin,
+    c_rate,
+    temperature,
+    battery_ID,
+    output_dir,
+    tolerance=0.01,
+    one_fig_only=False,
+    max_workers=20,  # Increased thread count for cycle processing
+):
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Use relative path from the script location
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(script_dir, "..", "..")
-    cs2_base_path = os.path.join(project_root, "assets", "raw_data", "CS2")
+    unique_cycles = df["Cycle_Count"].unique()
 
-    # Get all subfolders in CS2 directory
-    cs2_subfolders = [
-        f
-        for f in os.listdir(cs2_base_path)
-        if os.path.isdir(os.path.join(cs2_base_path, f)) and f.startswith("CS2_")
-    ]
+    # If vmax or vmin are None or invalid, calculate from data
+    if vmax is None or vmin is None or vmax <= 0 or vmin <= 0:
+        data_vmax = df["Voltage(V)"].max()
+        data_vmin = df["Voltage(V)"].min()
+        vmax = data_vmax * 0.95  # Use 95% of max voltage
+        vmin = data_vmin * 1.05  # Use 105% of min voltage
+        print(f"Using calculated voltage limits: vmax={vmax:.3f}V, vmin={vmin:.3f}V")
 
-    print(f"Found {len(cs2_subfolders)} CS2 subfolders: {cs2_subfolders}")
+    print(
+        f"Generating figures for {len(unique_cycles)} cycles using {max_workers} threads..."
+    )
 
-    # Process each subfolder
-    for subfolder in cs2_subfolders:
-        folder_path = os.path.join(cs2_base_path, subfolder)
-        print(f"\nProcessing folder: {subfolder}")
+    # Prepare cycle data for multithreading
+    cycle_tasks = []
+    for i, cycle in enumerate(unique_cycles):
+        cycle_df = df[df["Cycle_Count"] == cycle]
+        cycle_tasks.append((cycle_df, cycle, i))
 
-        try:
-            file_names = [file for file in os.listdir(folder_path)]
+    # Process cycles in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all cycle processing tasks
+        future_to_cycle = {
+            executor.submit(
+                generate_single_cycle_figures,
+                cycle_df,
+                cycle,
+                i,
+                vmax,
+                vmin,
+                c_rate,
+                temperature,
+                battery_ID,
+                output_dir,
+                tolerance,
+            ): (cycle, i)
+            for cycle_df, cycle, i in cycle_tasks
+        }
 
-            sorted_files, file_dates = sort_files(file_names, orientation="last")
-            sorted_files = sorted_files[::-1]
-            file_dates = file_dates[::-1]
-
-            print(f"Processing {len(sorted_files)} files in {subfolder}")
-            error_dict = {}
-            agg_df = pd.DataFrame()
-
-            cell_id = subfolder
-            print(f"Looking for battery ID: {cell_id}")
-            cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-            print(f"Found {len(cell_df)} matching records")
-
-            if len(cell_df) == 0:
-                print(
-                    f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}"
-                )
-                print(f"No metadata found for battery ID: {cell_id}, skipping...")
-                continue
-
-            cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-            cell_C_rate = cell_df["C_rate"].values[0]
-            cell_temperature = cell_df["Temperature (K)"].values[0]
-            cell_vmax = cell_df["Max_Voltage"].values[0]
-            cell_vmin = cell_df["Min_Voltage"].values[0]
-
-            # Set output directories
-            output_base_dir = "processed_datasets"
-            images_dir = os.path.join("processed_images", "LCO")
-
-            for i_count, file_name in enumerate(sorted_files):
-                try:
-                    file_path = os.path.join(folder_path, file_name)
-                    if file_name.endswith(".txt"):
-                        method = "text"
-                    elif file_name.endswith(".xlsx") or file_name.endswith(".xls"):
-                        method = "excel"
-
-                    df = parse_file(
-                        file_path,
-                        cell_initial_capacity,
-                        cell_C_rate,
-                        method,
-                        cell_vmax,
-                        cell_vmin,
-                    )
-                    df = update_df(df, agg_df)
-                    agg_df = pd.concat([agg_df, df], ignore_index=True)
-
-                # except add failed files to dictionary with error message
-                except Exception as e:
-                    error_dict[file_name] = str(e)
-
-                print(
-                    f"{round(i_count/len(sorted_files)*100,1)}% Complete for {subfolder}"
-                )
-
-            # Create CSV with only required columns
-            required_columns = [
-                "Current(A)",
-                "Voltage(V)",
-                "Test_Time(s)",
-                "Cycle_Count",
-                "Delta_Time(s)",
-                "Delta_Ah",
-                "Ah_throughput",
-                "EFC",
-                "C_rate",
-            ]
-            available_columns = [
-                col for col in required_columns if col in agg_df.columns
-            ]
-            output_df = agg_df[available_columns]
-
-            # Generate output filename
-            temperature_str = f"{int(cell_temperature)}K"
-            csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
-            csv_path = os.path.join("processed_datasets", "LCO", csv_filename)
-
-            # Create LCO subdirectory if it doesn't exist
-            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-
-            # Save CSV file
-            output_df.to_csv(csv_path, index=False)
-            print(f"Saved CSV file: {csv_path}")
-
-            # Generate figures and save to images directory
+        # Wait for all cycles to complete
+        completed_cycles = 0
+        for future in as_completed(future_to_cycle):
+            cycle, cycle_index = future_to_cycle[future]
             try:
-                print(f"Starting figure generation for {cell_id}")
-                print(f"Data shape: {agg_df.shape}")
-                print(f"Cycles found: {agg_df['Cycle_Count'].nunique()}")
-                generate_figures(
-                    agg_df,
-                    cell_vmax,
-                    cell_vmin,
-                    cell_C_rate,
-                    cell_temperature,
-                    battery_ID=cell_id,
-                    output_dir=images_dir,
-                    one_fig_only=False,
-                )
-                print(f"Generated figures for {cell_id}")
+                future.result()
+                completed_cycles += 1
+                if completed_cycles % 20 == 0 or completed_cycles == len(
+                    unique_cycles
+                ):  # Progress update every 20 cycles
+                    print(
+                        f"🖼️  {battery_ID}: Generated {completed_cycles}/{len(unique_cycles)} cycle images ({round(completed_cycles/len(unique_cycles)*100,1)}%)"
+                    )
             except Exception as e:
-                print(f"Error generating figures for {cell_id}: {str(e)}")
-                error_dict[f"figures_{cell_id}"] = str(e)
+                print(f"Error processing cycle {cycle}: {str(e)}")
 
-            # Save error log for this subfolder
-            if error_dict:
-                error_df = pd.DataFrame(
-                    list(error_dict.items()), columns=["File_Name", "Error_Message"]
-                )
-                error_log_path = os.path.join(
-                    "processed_datasets", "LCO", "error_log.csv"
-                )
-                error_df.to_csv(error_log_path, index=False)
-                print(f"Saved error log: {error_log_path}")
+    print(
+        f"✅ {battery_ID}: Figure generation completed - {completed_cycles} cycles processed"
+    )
+
+
+def get_cs2_subfolders(base_path):
+    """Get all CS2 subfolders from the base path."""
+    subfolders = [
+        f
+        for f in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, f)) and f.startswith("CS2_")
+    ]
+    return subfolders
+
+
+def get_cell_metadata(meta_df: pd.DataFrame, cell_id: str) -> Optional[CellMetadata]:
+    """Get cell metadata for a given battery ID."""
+    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+
+    if len(cell_df) == 0:
+        print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
+        print(f"No metadata found for battery ID: {cell_id}")
+        return None
+
+    return CellMetadata(
+        initial_capacity=cell_df["Initial_Capacity_Ah"].values[0],
+        c_rate=cell_df["C_rate"].values[0],
+        temperature=cell_df["Temperature (K)"].values[0],
+        vmax=cell_df["Max_Voltage"].values[0],
+        vmin=cell_df["Min_Voltage"].values[0],
+    )
+
+
+def process_files_in_subfolder(
+    folder_path: str, sorted_files: List[str], cell_meta: CellMetadata
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Process all files in a subfolder and return aggregated data."""
+    error_dict = {}
+    agg_df = pd.DataFrame()
+
+    # Extract subfolder name from folder_path
+    subfolder = os.path.basename(folder_path)
+
+    print(f"📁 Processing {len(sorted_files)} files for {subfolder}")
+
+    for i_count, file_name in enumerate(sorted_files):
+        try:
+            file_path = os.path.join(folder_path, file_name)
+            method = "text" if file_name.endswith(".txt") else "excel"
+
+            df = parse_file(
+                file_path,
+                cell_meta.initial_capacity,
+                cell_meta.c_rate,
+                method,
+                cell_meta.vmax,
+                cell_meta.vmin,
+            )
+            df = update_df(df, agg_df)
+            agg_df = pd.concat([agg_df, df], ignore_index=True)
 
         except Exception as e:
-            print(f"Error processing {subfolder}: {str(e)}")
-            continue
+            error_dict[file_name] = str(e)
 
-    print("\nAll CS2 subfolders processed!")
+        if (i_count + 1) % 5 == 0 or i_count == len(
+            sorted_files
+        ) - 1:  # Show progress every 5 files
+            print(
+                f"📁 {subfolder}: Processed {i_count + 1}/{len(sorted_files)} files ({round((i_count+1)/len(sorted_files)*100,1)}%)"
+            )
+
+    return agg_df, error_dict
+
+
+def save_processed_data(
+    agg_df: pd.DataFrame, cell_id: str, config: ProcessingConfig
+) -> str:
+    """Save processed data to CSV file."""
+    available_columns = [
+        col for col in config.required_columns if col in agg_df.columns
+    ]
+    output_df = agg_df[available_columns]
+
+    csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
+    csv_path = os.path.join(config.output_data_path, csv_filename)
+
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    output_df.to_csv(csv_path, index=False)
+    print(f"💾 Saved CSV file: {csv_path}")
+
+    return csv_path
+
+
+def generate_and_save_figures(
+    agg_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    cell_id: str,
+    error_dict: Dict[str, str],
+    config: ProcessingConfig,
+) -> None:
+    """Generate and save figures for the processed data."""
+    try:
+        print(
+            f"🖼️  Starting figure generation for {cell_id} ({agg_df.shape[0]} data points, {agg_df['Cycle_Count'].nunique()} cycles)"
+        )
+
+        generate_figures(
+            agg_df,
+            cell_meta.vmax,
+            cell_meta.vmin,
+            cell_meta.c_rate,
+            cell_meta.temperature,
+            battery_ID=cell_id,
+            output_dir=config.output_images_path,
+            one_fig_only=False,
+        )
+        print(f"✅ Generated figures for {cell_id}")
+
+    except Exception as e:
+        print(f"❌ Error generating figures for {cell_id}: {str(e)}")
+        error_dict[f"figures_{cell_id}"] = str(e)
+
+
+def save_error_log(
+    error_dict: Dict[str, str], cell_id: str, config: ProcessingConfig
+) -> None:
+    """Save error log for the subfolder."""
+    if not error_dict:
+        return
+
+    error_df = pd.DataFrame(
+        list(error_dict.items()), columns=["File_Name", "Error_Message"]
+    )
+    error_log_path = os.path.join(config.output_data_path, f"error_log_{cell_id}.csv")
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
+
+
+def process_single_subfolder(
+    subfolder: str, cs2_base_path: str, meta_df: pd.DataFrame, config: ProcessingConfig
+) -> None:
+    """Process a single subfolder completely."""
+    folder_path = os.path.join(cs2_base_path, subfolder)
+    print(f"\nProcessing folder: {subfolder}")
+
+    try:
+        # Get file list and sort
+        file_names = os.listdir(folder_path)
+        sorted_files, _ = sort_files(file_names, orientation="last")
+        sorted_files = sorted_files[::-1]
+
+        # Get cell metadata
+        cell_meta = get_cell_metadata(meta_df, subfolder)
+        if cell_meta is None:
+            return
+
+        # Process all files
+        agg_df, error_dict = process_files_in_subfolder(
+            folder_path, sorted_files, cell_meta
+        )
+
+        if len(agg_df) == 0:
+            print(f"No data processed for {subfolder}")
+            return
+
+        # Save processed data
+        save_processed_data(agg_df, subfolder, config)
+
+        # Generate figures
+        generate_and_save_figures(agg_df, cell_meta, subfolder, error_dict, config)
+
+        # Save error log
+        save_error_log(error_dict, subfolder, config)
+
+    except Exception as e:
+        print(f"Error processing {subfolder}: {str(e)}")
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all CS2 subfolders with multi-threading."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting CS2 battery data processing with 20 threads...")
+
+    # Load metadata
+    meta_df = load_meta_properties()
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    cs2_base_path = os.path.join(project_root, config.base_data_path)
+
+    # Get subfolders
+    cs2_subfolders = get_cs2_subfolders(cs2_base_path)
+    print(f"📂 Found {len(cs2_subfolders)} CS2 batteries: {cs2_subfolders}")
+
+    # Process subfolders with 20 threads (increased from 10)
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        # Submit all subfolder processing tasks
+        future_to_subfolder = {
+            executor.submit(
+                process_single_subfolder, subfolder, cs2_base_path, meta_df, config
+            ): subfolder
+            for subfolder in cs2_subfolders
+        }
+
+        # Wait for all subfolders to complete
+        for future in as_completed(future_to_subfolder):
+            subfolder = future_to_subfolder[future]
+            try:
+                future.result()
+                print(f"✅ Completed processing battery: {subfolder}")
+            except Exception as e:
+                print(f"✗ Error processing subfolder {subfolder}: {str(e)}")
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"🎉 All CS2 subfolders processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(cs2_subfolders)} subfolders with 20 threads")
+    print(
+        f"⚡ Average time per subfolder: {total_time/len(cs2_subfolders):.2f} seconds"
+    )
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
