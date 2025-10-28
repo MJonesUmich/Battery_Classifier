@@ -6,13 +6,13 @@ import pandas as pd
 from scipy.io import loadmat
 
 
-def load_meta_properties():
+def load_meta_properties(sheet_name="General_Infos"):
     # Finish function to associate file name with cell capacity, c-rate, and temperatures
-    df = pd.read_excel(
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\battery_data_mapper.xlsx",
-        sheet_name="General_Infos",
-    )
-    return df
+    # Load battery mapper data:
+    sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    meta_df = pd.read_excel(url, sheet_name=sheet_name)
+    return meta_df
 
 
 def extract_voltage_limits_from_mat_full(file_path, cell_number=1, percentile=99):
@@ -162,7 +162,11 @@ def load_from_mat_full(file_path, cell_number=1):
 
 
 def get_indices(df):
-
+    """
+    Get charge and discharge indices for Oxford data.
+    For Oxford data, we use the existing Characterization_Cycle information
+    and detect charge/discharge transitions within each cycle.
+    """
     I = df["Current(A)"]
 
     # Set threshold to avoid 0 current jitter
@@ -172,35 +176,64 @@ def get_indices(df):
     sign3[I < -thr] = -1
 
     charge_indices, discharge_indices = [], []
-    prev = 0
-    for i, s in enumerate(sign3):
-        if s == 0:
-            continue
-        if prev == 0:
-            prev = s
-            continue
-        if s != prev:
-            if s == 1:
-                charge_indices.append(i)
-            elif s == -1:
-                discharge_indices.append(i)
-            prev = s
 
-    complexity, expected_order = check_indices(charge_indices, discharge_indices)
-    if complexity == "High":
-        # Skip this file
-        raise ValueError("Indices do not alternate correctly.")
+    # Get unique cycles from Characterization_Cycle column
+    if "Characterization_Cycle" in df.columns:
+        unique_cycles = sorted(df["Characterization_Cycle"].unique())
+        print(f"Found {len(unique_cycles)} cycles in Characterization_Cycle column")
+
+        # For each cycle, find charge and discharge transitions
+        for cycle in unique_cycles:
+            cycle_mask = df["Characterization_Cycle"] == cycle
+            cycle_indices = df[cycle_mask].index.tolist()
+
+            if len(cycle_indices) == 0:
+                continue
+
+            # Find charge start (first positive current in this cycle)
+            charge_start = None
+            for idx in cycle_indices:
+                if sign3[idx] == 1:
+                    charge_start = idx
+                    break
+
+            # Find discharge start (first negative current in this cycle)
+            discharge_start = None
+            for idx in cycle_indices:
+                if sign3[idx] == -1:
+                    discharge_start = idx
+                    break
+
+            if charge_start is not None:
+                charge_indices.append(charge_start)
+            if discharge_start is not None:
+                discharge_indices.append(discharge_start)
     else:
-        if expected_order[0] == "discharge" and len(discharge_indices) > len(
-            charge_indices
-        ):
-            discharge_indices = discharge_indices[:-1]
-        elif expected_order[0] == "charge" and len(charge_indices) > len(
-            discharge_indices
-        ):
-            charge_indices = charge_indices[:-1]
+        # Fallback to original method if no Characterization_Cycle column
+        prev = 0
+        for i, s in enumerate(sign3):
+            if s == 0:
+                continue
+            if prev == 0:
+                prev = s
+                continue
+            if s != prev:
+                if s == 1:
+                    charge_indices.append(i)
+                elif s == -1:
+                    discharge_indices.append(i)
+                prev = s
 
-    assert len(charge_indices) == len(discharge_indices)
+    # Ensure we have the same number of charge and discharge indices
+    min_count = min(len(charge_indices), len(discharge_indices))
+    if len(charge_indices) > min_count:
+        charge_indices = charge_indices[:min_count]
+    if len(discharge_indices) > min_count:
+        discharge_indices = discharge_indices[:min_count]
+
+    print(
+        f"Detected {len(charge_indices)} charge indices and {len(discharge_indices)} discharge indices"
+    )
     return charge_indices, discharge_indices
 
 
@@ -244,7 +277,7 @@ def scrub_and_tag(
     vmin=None,
     tolerance=0.01,
 ):
-    # Downsample to just between charge cycles
+    # Downsample to just between first charge and last discharge
     df = df.iloc[charge_indices[0] : discharge_indices[-1] + 1].reset_index(drop=True)
 
     # Adjust charge_indices and discharge_indices to match the new DataFrame
@@ -257,18 +290,22 @@ def scrub_and_tag(
     # Process each cycle to filter out constant voltage holds
     filtered_cycles = []
 
-    for i, (charge_start, charge_end) in enumerate(
-        zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1
-    ):
-        # Get the discharge start for this cycle
-        if i <= len(adjusted_discharge_indices):
-            discharge_start = adjusted_discharge_indices[i - 1]
-        else:
-            discharge_start = len(df)
+    # Ensure we have the same number of charge and discharge indices
+    min_cycles = min(len(adjusted_charge_indices), len(adjusted_discharge_indices))
 
-        # Extract cycle data
-        cycle_data = df.iloc[charge_start:discharge_start].copy()
-        cycle_data["Cycle_Count"] = i
+    for i in range(min_cycles):
+        charge_start = adjusted_charge_indices[i]
+        discharge_start = adjusted_discharge_indices[i]
+
+        # Determine the end of this cycle (start of next charge or end of data)
+        if i + 1 < len(adjusted_charge_indices):
+            cycle_end = adjusted_charge_indices[i + 1]
+        else:
+            cycle_end = len(df)
+
+        # Extract cycle data from charge start to cycle end
+        cycle_data = df.iloc[charge_start:cycle_end].copy()
+        cycle_data["Cycle_Count"] = i + 1
 
         # Filter out constant voltage holds if vmax and vmin are provided
         if vmax is not None and vmin is not None:
@@ -282,11 +319,13 @@ def scrub_and_tag(
         df = pd.concat(filtered_cycles, ignore_index=True)
     else:
         # Fallback to original method if no cycles were filtered
-        for i, (start, end) in enumerate(
-            zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]),
-            start=1,
-        ):
-            df.loc[start : end - 1, "Cycle_Count"] = i
+        for i in range(min_cycles):
+            charge_start = adjusted_charge_indices[i]
+            if i + 1 < len(adjusted_charge_indices):
+                cycle_end = adjusted_charge_indices[i + 1]
+            else:
+                cycle_end = len(df)
+            df.loc[charge_start : cycle_end - 1, "Cycle_Count"] = i + 1
 
     # Coloumb count Ah throughput for each cycle
     df["Delta_Time(s)"] = df["Test_Time(s)"].diff().fillna(0)
@@ -307,6 +346,7 @@ def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
     - For charge: Keep data from start until voltage reaches vmax, but exclude CV hold
     - For discharge: Keep data from discharge start until voltage reaches vmin
     - CV hold detection: voltage stays near vmax/vmin while current decreases
+    - Strict filtering: only keep data within vmin-vmax range
     """
     if len(cycle_data) == 0:
         return cycle_data
@@ -407,7 +447,15 @@ def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
         filtered_indices.extend(range(discharge_start, discharge_end_idx))
 
     if len(filtered_indices) > 0:
-        return cycle_data.iloc[filtered_indices].reset_index(drop=True)
+        filtered_data = cycle_data.iloc[filtered_indices].reset_index(drop=True)
+
+        # Apply strict voltage range filtering
+        voltage_mask = (filtered_data["Voltage(V)"] >= vmin) & (
+            filtered_data["Voltage(V)"] <= vmax
+        )
+        final_filtered = filtered_data[voltage_mask].reset_index(drop=True)
+
+        return final_filtered
     else:
         # Fallback: return original data if filtering fails
         return cycle_data
@@ -512,19 +560,25 @@ def generate_figures(
 
         # Find vmin_idx after discharge starts (not before)
         discharge_portion = cycle_df.loc[disch_start:]
+        vmin_reached = False
         try:
             vmin_idx_adjusted = discharge_portion[
                 discharge_portion["Voltage(V)"] <= vmin + tolerance
             ].index[0]
+            vmin_reached = True
         except IndexError:
             print(
-                f"Warning: No vmin reached after discharge in cycle {cycle}, using end of discharge..."
+                f"Warning: No vmin reached after discharge in cycle {cycle}, skipping discharge plot..."
             )
-            vmin_idx_adjusted = discharge_portion.index[-1]
+            vmin_reached = False
 
-        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx_adjusted].copy()
+        # Only create discharge data if vmin was actually reached
+        if vmin_reached:
+            discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx_adjusted].copy()
+        else:
+            discharge_cycle_df = pd.DataFrame()  # Empty dataframe
 
-        # Check if we have valid data
+        # Check if we have valid charge data
         if len(charge_cycle_df) == 0:
             print(
                 f"Warning: No charge data found in cycle {cycle}, skipping charge plot..."
@@ -550,29 +604,40 @@ def generate_figures(
             plt.savefig(save_path)
             plt.close()
 
-        if len(discharge_cycle_df) == 0:
+        # Check if we have valid discharge data and vmin was reached
+        if len(discharge_cycle_df) == 0 or not vmin_reached:
             print(
-                f"Warning: No discharge data found in cycle {cycle}, skipping discharge plot..."
+                f"Warning: No valid discharge data found in cycle {cycle}, skipping discharge plot..."
             )
         else:
-            discharge_cycle_df["Discharge_Time(s)"] = (
-                discharge_cycle_df["Test_Time(s)"]
-                - discharge_cycle_df["Test_Time(s)"].iloc[0]
+            # Additional validation: check if discharge curve has meaningful voltage range
+            voltage_range = (
+                discharge_cycle_df["Voltage(V)"].max()
+                - discharge_cycle_df["Voltage(V)"].min()
             )
+            if voltage_range < 0.1:  # Less than 0.1V range is not meaningful
+                print(
+                    f"Warning: Discharge voltage range too small ({voltage_range:.3f}V) in cycle {cycle}, skipping discharge plot..."
+                )
+            else:
+                discharge_cycle_df["Discharge_Time(s)"] = (
+                    discharge_cycle_df["Test_Time(s)"]
+                    - discharge_cycle_df["Test_Time(s)"].iloc[0]
+                )
 
-            # plot current on secondary axis
-            plt.figure(figsize=(10, 6))
-            plt.plot(
-                discharge_cycle_df["Discharge_Time(s)"],
-                discharge_cycle_df["Voltage(V)"],
-                "r-",
-            )  # remove last few points to avoid voltage recovery
-            plt.ylabel("Voltage (V)", color="red")
-            plt.title(f"Cycle {cycle} Discharge Profile")
-            save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(images_dir, save_string)
-            plt.savefig(save_path)
-            plt.close()
+                # plot current on secondary axis
+                plt.figure(figsize=(10, 6))
+                plt.plot(
+                    discharge_cycle_df["Discharge_Time(s)"],
+                    discharge_cycle_df["Voltage(V)"],
+                    "r-",
+                )  # remove last few points to avoid voltage recovery
+                plt.ylabel("Voltage (V)", color="red")
+                plt.title(f"Cycle {cycle} Discharge Profile")
+                save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+                save_path = os.path.join(images_dir, save_string)
+                plt.savefig(save_path)
+                plt.close()
 
         # Exit function after 1st run if one_fig_only is True
         if one_fig_only:
@@ -581,7 +646,7 @@ def generate_figures(
 
 if __name__ == "__main__":
     # Process Oxford Battery Degradation Dataset
-    file_path = r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Oxford\Oxford_Battery_Degradation_Dataset_1.mat"
+    file_path = r"C:\Users\zhzha\Documents\github\Battery_Classifier\assets\raw_data\Oxford\Oxford_Battery_Degradation_Dataset_1.mat"
     cells_to_process = range(1, 9)  # Full file has cells 1-8
 
     print(f"Processing {file_path}")
@@ -679,7 +744,7 @@ if __name__ == "__main__":
                     cell_temperature,
                     battery_ID=cell_id,
                     output_dir=output_dir,
-                    one_fig_only=True,
+                    one_fig_only=False,
                 )
             except Exception as e:
                 print(
