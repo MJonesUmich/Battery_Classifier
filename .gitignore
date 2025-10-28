@@ -1,2 +1,55 @@
-*.csv
-*.xlsx
+# *.csv
+# *.xlsx
+# *.txt
+# *.xls
+# *.mat
+# *.zip 
+# *.m
+assets/raw_data/*
+processed_images/*
+processed_images/.gitkeep
+processed_datasets/*
+processed_datasets/.gitkeep
+
+
+# Keep external data directory structure but ignore large files
+/data/external/*.txt
+/data/external/*.csv
+
+# Cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment files
+.env
+.venv
+env/
+venv/
+secret.env
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter notebook and checkpoints
+.ipynb_checkpoints/
+notebooks/text_process_v2.ipynb
+
+# Logs
+*.log
+logs/
+*.gitkeep

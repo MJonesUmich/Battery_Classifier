@@ -372,17 +372,17 @@ def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.00
 
 if __name__ == "__main__": 
     #Example run through on 1 file
-    folder_paths = [r'C:\Users\MJone\Downloads\CX_files\CX2_16',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_8',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_33',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_34',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_35',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_36',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_37',
-                    r'C:\Users\MJone\Downloads\CX_files\CX2_38',
+    folder_paths = [r'../../assets/raw_data/CX2/cx2_16',
+                    r'../../assets/raw_data/CX2/cx2_8',
+                    r'../../assets/raw_data/CX2/cx2_33',
+                    r'../../assets/raw_data/CX2/cx2_34',
+                    r'../../assets/raw_data/CX2/cx2_35',
+                    r'../../assets/raw_data/CX2/cx2_36',
+                    r'../../assets/raw_data/CX2/cx2_37',
+                    r'../../assets/raw_data/CX2/cx2_38',
                     ]
     
-    process_CX_datafiles(folder_paths, output_folder_paths = [r'processed_images\LCO', r'processed_datasets\LCO'], tolerance=0.001)
+    process_CX_datafiles(folder_paths, output_folder_paths = [r'../../processed_images/LCO', r'../../processed_datasets/LCO'], tolerance=0.001)
 
 
 #Need to Export: Current(A), Voltage(V), Test_Time(s), Cycle_Count, Delta Time(s), Delta_Ah, Ah_throughput, EFC, C-rate 

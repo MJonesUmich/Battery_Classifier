@@ -7,8 +7,10 @@ import re
 
 def load_meta_properties():
     #Finish function to associate file name with cell capacity, c-rate, and temperatures
-    df = pd.read_excel(r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\battery_data_mapper.xlsx', sheet_name='General_Infos')
-    return df
+    sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    meta_df = pd.read_excel(url, sheet_name='General_Infos')
+    return meta_df
 
 
 def check_file_string(file_name):
@@ -161,11 +163,6 @@ def get_indices(df):
                     discharge_indices.append(i)
                 prev = s
 
-        # print(len(charge_indices), len(discharge_indices))
-        # print(charge_indices[0], discharge_indices[0])
-        # print(charge_indices[1], discharge_indices[1])
-        # print(charge_indices[2], discharge_indices[2])
-        # print(charge_indices[3], discharge_indices[3])
 
         complexity, expected_order = check_indices(charge_indices, discharge_indices)
         if complexity == "High":
@@ -220,15 +217,21 @@ def scrub_and_tag(df, charge_indices, discharge_indices, cell_initial_capacity, 
     # Process each cycle to filter out constant voltage holds
     filtered_cycles = []
     
-    for i, (charge_start, charge_end) in enumerate(zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1):
+    for i, charge_start in enumerate(adjusted_charge_indices, start=1):
         # Get the discharge start for this cycle
         if i <= len(adjusted_discharge_indices):
             discharge_start = adjusted_discharge_indices[i-1]
         else:
             discharge_start = len(df)
         
-        # Extract cycle data
-        cycle_data = df.iloc[charge_start:discharge_start].copy()
+        # Get the end of this cycle (start of next charge or end of dataframe)
+        if i < len(adjusted_charge_indices):
+            cycle_end = adjusted_charge_indices[i]
+        else:
+            cycle_end = len(df)
+        
+        # Extract cycle data (from charge start to next charge start)
+        cycle_data = df.iloc[charge_start:cycle_end].copy()
         cycle_data['Cycle_Count'] = i
         
         # Filter out constant voltage holds if vmax and vmin are provided
@@ -268,30 +271,27 @@ def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
     voltage = cycle_data['Voltage(V)'].values
     current = cycle_data['Current(A)'].values
     
-    # Find the first point where voltage reaches vmax (during charge)
-    vmax_reached = False
-    vmax_idx = None
-    for i, v in enumerate(voltage):
-        if v >= vmax - tolerance and not vmax_reached:
-            vmax_reached = True
-            vmax_idx = i
-            break
-    
-    # Find the first point where voltage reaches vmin (during discharge)
-    vmin_reached = False
-    vmin_idx = None
-    for i, v in enumerate(voltage):
-        if v <= vmin + tolerance and not vmin_reached:
-            vmin_reached = True
-            vmin_idx = i
-            break
-    
     # Find discharge start (first negative current)
     discharge_start = None
     for i, c in enumerate(current):
         if c < -tolerance:
             discharge_start = i
             break
+    
+    # Find the first point where voltage reaches vmax (during charge)
+    vmax_idx = None
+    for i, v in enumerate(voltage):
+        if v >= vmax - tolerance:
+            vmax_idx = i
+            break
+    
+    # Find the first point where voltage reaches vmin (during discharge, AFTER discharge starts)
+    vmin_idx = None
+    if discharge_start is not None:
+        for i in range(discharge_start, len(voltage)):
+            if voltage[i] <= vmin + tolerance:
+                vmin_idx = i
+                break
     
     # Filter data based on voltage range
     if vmax_idx is not None and vmin_idx is not None and discharge_start is not None:
@@ -372,91 +372,112 @@ def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, output_dir
 
 
 if __name__ == "__main__": 
-    #Example run through on 1 file
+    # Process all CS2 subfolders
     meta_df = load_meta_properties()
-
-    folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_3'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_8'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_9'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_21'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_33'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_34'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_35'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_36'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_37'
-    #folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\CS2\CS2_38'
-
-    file_names = [file for file in os.listdir(folder_path)]
-
-    #skip files < 200kb since they don't have enough data to actually consider:  
-    file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
-
-    sorted_files, file_dates = sort_files(file_names, orientation="last")
-    sorted_files = sorted_files[::-1]
-    file_dates = file_dates[::-1]
-
-    print(sorted_files)
-    error_dict = {}
-
-    agg_df = pd.DataFrame()
-
-    cell_id = folder_path.split('\\')[-1]
-    print(f"Looking for battery ID: {cell_id}")
-    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-    print(f"Found {len(cell_df)} matching records")
     
-    if len(cell_df) == 0:
-        print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
-        raise ValueError(f"No metadata found for battery ID: {cell_id}")
+    # Use relative path from the script location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    cs2_base_path = os.path.join(project_root, 'assets', 'raw_data', 'CS2')
     
-    cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-    cell_C_rate = cell_df["C_rate"].values[0]
-    cell_temperature = cell_df["Temperature (K)"].values[0]
-    cell_vmax = cell_df["Max_Voltage"].values[0]
-    cell_vmin = cell_df["Min_Voltage"].values[0]
-
-    # Create output directories
-    output_base_dir = "CS2_LCO"
-    images_dir = os.path.join(output_base_dir, "images")
-    os.makedirs(output_base_dir, exist_ok=True)
-    os.makedirs(images_dir, exist_ok=True)
-
-    for i_count, file_name in enumerate(file_names): 
-        try: 
-            #print(file_name)
-            file_path   = os.path.join(folder_path, file_name)
-            if file_name.endswith('.txt'):
-                method = 'text'
-            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
-                method = 'excel'
-
-            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method, cell_vmax, cell_vmin)
-            update_df(df, agg_df)
-            agg_df = pd.concat([agg_df, df], ignore_index=True)
-
-        #except add failed files to dictionary with error message
-        except Exception as e:
-            error_dict[file_name] = str(e)
+    # Get all subfolders in CS2 directory
+    cs2_subfolders = [f for f in os.listdir(cs2_base_path) 
+                      if os.path.isdir(os.path.join(cs2_base_path, f)) and f.startswith('CS2_')]
+    
+    print(f"Found {len(cs2_subfolders)} CS2 subfolders: {cs2_subfolders}")
+    
+    # Process each subfolder
+    for subfolder in cs2_subfolders:
+        folder_path = os.path.join(cs2_base_path, subfolder)
+        print(f"\nProcessing folder: {subfolder}")
         
-        print(f'{round(i_count/len(file_names)*100,1)}% Complete')
+        try:
+            file_names = [file for file in os.listdir(folder_path)]
 
-    # Create CSV with only required columns
-    required_columns = ["Current(A)", "Voltage(V)", "Test_Time(s)", "Cycle_Count", "Delta_Time(s)", "Delta_Ah", "Ah_throughput", "EFC", "C_rate"]
-    available_columns = [col for col in required_columns if col in agg_df.columns]
-    output_df = agg_df[available_columns]
+            #skip files < 200kb since they don't have enough data to actually consider:  
+            file_names = [file for file in file_names if os.path.getsize(os.path.join(folder_path, file)) > 200*1024 and check_file_string(file) != "bad"]
+
+            if not file_names:
+                print(f"No valid files found in {subfolder}, skipping...")
+                continue
+
+            sorted_files, file_dates = sort_files(file_names, orientation="last")
+            sorted_files = sorted_files[::-1]
+            file_dates = file_dates[::-1]
+
+            print(f"Processing {len(sorted_files)} files in {subfolder}")
+            error_dict = {}
+            agg_df = pd.DataFrame()
+
+            cell_id = subfolder
+            print(f"Looking for battery ID: {cell_id}")
+            cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+            print(f"Found {len(cell_df)} matching records")
+            
+            if len(cell_df) == 0:
+                print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
+                print(f"No metadata found for battery ID: {cell_id}, skipping...")
+                continue
+            
+            cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
+            cell_C_rate = cell_df["C_rate"].values[0]
+            cell_temperature = cell_df["Temperature (K)"].values[0]
+            cell_vmax = cell_df["Max_Voltage"].values[0]
+            cell_vmin = cell_df["Min_Voltage"].values[0]
+
+            # Create output directories
+            output_base_dir = "processed_datasets"
+            images_dir = "/processed_images/LCO"
+            os.makedirs(output_base_dir, exist_ok=True)
+            os.makedirs(images_dir, exist_ok=True)
+
+            for i_count, file_name in enumerate(sorted_files): 
+                try: 
+                    file_path = os.path.join(folder_path, file_name)
+                    if file_name.endswith('.txt'):
+                        method = 'text'
+                    elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+                        method = 'excel'
+
+                    df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method, cell_vmax, cell_vmin)
+                    df = update_df(df, agg_df)
+                    agg_df = pd.concat([agg_df, df], ignore_index=True)
+
+                #except add failed files to dictionary with error message
+                except Exception as e:
+                    error_dict[file_name] = str(e)
+                
+                print(f'{round(i_count/len(sorted_files)*100,1)}% Complete for {subfolder}')
+
+            # Create CSV with only required columns
+            required_columns = ["Current(A)", "Voltage(V)", "Test_Time(s)", "Cycle_Count", "Delta_Time(s)", "Delta_Ah", "Ah_throughput", "EFC", "C_rate"]
+            available_columns = [col for col in required_columns if col in agg_df.columns]
+            output_df = agg_df[available_columns]
+            
+            # Generate output filename
+            temperature_str = f"{int(cell_temperature)}K"
+            csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
+            csv_path = os.path.join("processed_datasets", "LCO", csv_filename)
+            
+            # Create LCO subdirectory if it doesn't exist
+            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            
+            # Save CSV file
+            output_df.to_csv(csv_path, index=False)
+            print(f"Saved CSV file: {csv_path}")
+            
+            # Generate figures and save to images directory
+            generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, output_dir=images_dir, one_fig_only=False)
+            
+            # Save error log for this subfolder
+            if error_dict:
+                error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
+                error_log_path = os.path.join("processed_datasets", "LCO", "error_log.csv")
+                error_df.to_csv(error_log_path, index=False)
+                print(f"Saved error log: {error_log_path}")
+                
+        except Exception as e:
+            print(f"Error processing {subfolder}: {str(e)}")
+            continue
     
-    # Generate output filename
-    temperature_str = f"{int(cell_temperature)}K"
-    csv_filename = f"CS2_LCO_{cell_id}_{temperature_str}.csv"
-    csv_path = os.path.join(output_base_dir, csv_filename)
-    
-    # Save CSV file
-    output_df.to_csv(csv_path, index=False)
-    print(f"Saved CSV file: {csv_path}")
-    
-    # Generate figures and save to images directory
-    generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, output_dir=images_dir, one_fig_only=True)
-    
-    # Save error log
-    error_df = pd.DataFrame(list(error_dict.items()), columns=['File_Name', 'Error_Message'])
-    error_df.to_csv('error_log.csv', index=False)
+    print("\nAll CS2 subfolders processed!")
