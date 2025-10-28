@@ -1,19 +1,56 @@
 import os
 import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.help_function import load_meta_properties
 
-def load_meta_properties():
-    # Finish function to associate file name with cell capacity, c-rate, and temperatures
-    # Load battery mapper data:
-    sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-    meta_df = pd.read_excel(url, sheet_name="General_Infos")
-    return meta_df
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for PL data processing."""
+
+    base_data_path: str = "assets/raw_data/PL"
+    output_data_path: str = "processed_datasets/LCO"
+    output_images_path: str = "processed_images/LCO"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
 
 
 def extract_date(file_name):
@@ -681,77 +718,60 @@ def generate_figures(
     print(f"{'='*70}\n")
 
 
-if __name__ == "__main__":
-    # Example run through on 1 file
-    meta_df = load_meta_properties()
+def get_pl_subfolders(base_path):
+    """Get all PL subfolders from the base path."""
+    subfolders = [
+        f
+        for f in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, f))
+        and f.startswith(("Capacity_", "SOC_"))
+    ]
+    return subfolders
 
-    folder_path = (
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\PL\Capacity_25C"
-    )
-    # folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\PL\Capacity_50C'
-    # folder_path = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\PL\SOC_0%-100%_HalfC'
 
-    # Recursively find all data files in subdirectories
-    file_names = []
-    for root, dirs, files in os.walk(folder_path):
-        for file in files:
-            if file.endswith((".xls", ".xlsx", ".csv")):
-                file_path_full = os.path.join(root, file)
-                # skip files < 200kb since they don't have enough data to actually consider:
-                if os.path.getsize(file_path_full) > 200 * 1024:
-                    file_names.append(file_path_full)
-
-    # Extract just the filenames for sorting
-    file_names_only = [os.path.basename(f) for f in file_names]
-
-    sorted_files, file_dates = sort_files(file_names_only)
-    sorted_files = sorted_files[::-1]
-    file_dates = file_dates[::-1]
-
-    print(f"Found {len(file_names)} files to process")
-    print("Sample files:", sorted_files[:3])
-    print("Processing files...")
-    error_dict = {}
-
-    agg_df = pd.DataFrame()
-
-    # Derive Battery ID from folder name (e.g., "Capacity_25C")
-    # Extract the folder name from the path
-    folder_name = os.path.basename(folder_path)
-    cell_id = folder_name  # Use folder name as Battery_ID
-
-    # Fallback to "PL" if folder name not in metadata
-    print(f"Looking for battery ID: {cell_id}")
-    cell_df = meta_df[meta_df["Battery_ID"] == cell_id]
-    print(f"Found {len(cell_df)} matching records")
+def get_cell_metadata(meta_df: pd.DataFrame, cell_id: str) -> Optional[CellMetadata]:
+    """Get cell metadata for a given battery ID."""
+    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
 
     if len(cell_df) == 0:
-        # Try with "PL" prefix
-        cell_id_with_prefix = f"PL_{folder_name}"
-        print(f"Trying alternative battery ID: {cell_id_with_prefix}")
-        cell_df = meta_df[meta_df["Battery_ID"] == cell_id_with_prefix]
-        print(f"Found {len(cell_df)} matching records")
+        # Try with "PL_" prefix
+        cell_id_with_prefix = f"PL_{cell_id}"
+        cell_df = meta_df[
+            meta_df["Battery_ID"].str.lower() == str.lower(cell_id_with_prefix)
+        ]
 
     if len(cell_df) == 0:
         print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
-        # Use default values if no metadata found
-        cell_initial_capacity = 1.0
-        cell_C_rate = 1.0
-        cell_temperature = 298.0
-        cell_vmax = 4.2
-        cell_vmin = 3.0
-        print("Using default values for PL data")
-    else:
-        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-        cell_C_rate = cell_df["C_rate"].values[0]
-        cell_temperature = cell_df["Temperature (K)"].values[0]
-        cell_vmax = cell_df["Max_Voltage"].values[0]
-        cell_vmin = cell_df["Min_Voltage"].values[0]
+        print(f"No metadata found for battery ID: {cell_id}")
+        return None
+
+    return CellMetadata(
+        initial_capacity=cell_df["Initial_Capacity_Ah"].values[0],
+        c_rate=cell_df["C_rate"].values[0],
+        temperature=cell_df["Temperature (K)"].values[0],
+        vmax=cell_df["Max_Voltage"].values[0],
+        vmin=cell_df["Min_Voltage"].values[0],
+    )
+
+
+def process_files_in_subfolder(
+    folder_path: str,
+    sorted_files: List[str],
+    cell_meta: CellMetadata,
+    file_names: List[str],
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Process all files in a subfolder and return aggregated data."""
+    error_dict = {}
+    agg_df = pd.DataFrame()
+
+    # Extract subfolder name from folder_path
+    subfolder = os.path.basename(folder_path)
+
+    print(f"📁 Processing {len(sorted_files)} files for {subfolder}")
 
     for i_count, file_name in enumerate(sorted_files):
-        print(f"Processing file {i_count+1}/{len(sorted_files)}: {file_name}")
         try:
-            # Find the full path for this file
+            # Find the full path for this file from the original file list
             file_path = None
             for full_path in file_names:
                 if os.path.basename(full_path) == file_name:
@@ -768,73 +788,220 @@ if __name__ == "__main__":
                 method = "excel"
             elif file_name.endswith(".csv"):
                 method = "csv"
+            else:
+                continue
 
             df = parse_file(
                 file_path,
-                cell_initial_capacity,
-                cell_C_rate,
+                cell_meta.initial_capacity,
+                cell_meta.c_rate,
                 method,
-                cell_vmax,
-                cell_vmin,
+                cell_meta.vmax,
+                cell_meta.vmin,
             )
             if len(df) > 0:
-                update_df(df, agg_df)
+                df = update_df(df, agg_df)
                 agg_df = pd.concat([agg_df, df], ignore_index=True)
 
-        # except add failed files to dictionary with error message
         except Exception as e:
             error_dict[file_name] = str(e)
 
-        print(f"{round(i_count/len(sorted_files)*100,1)}% Complete")
+        if (i_count + 1) % 5 == 0 or i_count == len(
+            sorted_files
+        ) - 1:  # Show progress every 5 files
+            print(
+                f"📁 {subfolder}: Processed {i_count + 1}/{len(sorted_files)} files ({round((i_count+1)/len(sorted_files)*100,1)}%)"
+            )
 
-    # Create PL_LCO folder structure
-    pl_lco_folder = "PL_LCO"
-    images_folder = os.path.join(pl_lco_folder, "images")
-    os.makedirs(pl_lco_folder, exist_ok=True)
-    os.makedirs(images_folder, exist_ok=True)
+    return agg_df, error_dict
 
-    # send to df and output:
+
+def save_processed_data(
+    agg_df: pd.DataFrame, cell_id: str, config: ProcessingConfig
+) -> str:
+    """Save processed data to CSV file."""
+    available_columns = [
+        col for col in config.required_columns if col in agg_df.columns
+    ]
+    output_df = agg_df[available_columns]
+
+    csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
+    csv_path = os.path.join(config.output_data_path, csv_filename)
+
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    output_df.to_csv(csv_path, index=False)
+    print(f"💾 Saved CSV file: {csv_path}")
+
+    return csv_path
+
+
+def generate_and_save_figures(
+    agg_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    cell_id: str,
+    error_dict: Dict[str, str],
+    config: ProcessingConfig,
+) -> None:
+    """Generate and save figures for the processed data."""
+    try:
+        print(
+            f"🖼️  Starting figure generation for {cell_id} ({agg_df.shape[0]} data points, {agg_df['Cycle_Count'].nunique()} cycles)"
+        )
+
+        # Create battery-specific subdirectory
+        battery_images_path = os.path.join(config.output_images_path, cell_id)
+        os.makedirs(battery_images_path, exist_ok=True)
+
+        generate_figures(
+            agg_df,
+            cell_meta.vmax,
+            cell_meta.vmin,
+            cell_meta.c_rate,
+            cell_meta.temperature,
+            battery_ID=cell_id,
+            one_fig_only=False,
+            output_folder=battery_images_path,
+        )
+        print(f"✅ Generated figures for {cell_id}")
+
+    except Exception as e:
+        print(f"❌ Error generating figures for {cell_id}: {str(e)}")
+        error_dict[f"figures_{cell_id}"] = str(e)
+
+
+def save_error_log(
+    error_dict: Dict[str, str], cell_id: str, config: ProcessingConfig
+) -> None:
+    """Save error log for the subfolder."""
+    if not error_dict:
+        return
+
     error_df = pd.DataFrame(
         list(error_dict.items()), columns=["File_Name", "Error_Message"]
     )
-    error_df.to_csv("pl_error_log.csv", index=False)
+    error_log_path = os.path.join(config.output_data_path, f"error_log_{cell_id}.csv")
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
 
-    # Export individual CSV for this battery with specified fields
-    if not agg_df.empty:
-        # Select only the required fields
-        required_fields = [
-            "Current(A)",
-            "Voltage(V)",
-            "Test_Time(s)",
-            "Cycle_Count",
-            "Delta_Time(s)",
-            "Delta_Ah",
-            "Ah_throughput",
-            "EFC",
-            "C_rate",
-        ]
-        available_fields = [
-            field for field in required_fields if field in agg_df.columns
-        ]
-        export_df = agg_df[available_fields].copy()
 
-        # Create filename based on battery ID and temperature
-        temp_k = int(cell_temperature)
-        csv_filename = f"PL_LCO_{cell_id}_{temp_k}K.csv"
-        csv_path = os.path.join(pl_lco_folder, csv_filename)
-        export_df.to_csv(csv_path, index=False)
-        print(f"Exported individual CSV: {csv_path}")
+def process_single_subfolder(
+    subfolder: str, pl_base_path: str, meta_df: pd.DataFrame, config: ProcessingConfig
+) -> None:
+    """Process a single subfolder completely."""
+    folder_path = os.path.join(pl_base_path, subfolder)
+    print(f"\nProcessing folder: {subfolder}")
 
-        # Generate figures and save to images subfolder
-        generate_figures(
-            agg_df,
-            cell_vmax,
-            cell_vmin,
-            cell_C_rate,
-            cell_temperature,
-            battery_ID=cell_id,
-            one_fig_only=True,
-            output_folder=images_folder,
+    try:
+        # Get file list and sort
+        file_names = []
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                if file.endswith((".xls", ".xlsx", ".csv")):
+                    file_path_full = os.path.join(root, file)
+                    # skip files < 200kb since they don't have enough data
+                    if os.path.getsize(file_path_full) > 200 * 1024:
+                        file_names.append(file_path_full)
+
+        # Extract just the filenames for sorting
+        file_names_only = [os.path.basename(f) for f in file_names]
+        sorted_files, _ = sort_files(file_names_only)
+        sorted_files = sorted_files[::-1]
+
+        # Get cell metadata
+        cell_meta = get_cell_metadata(meta_df, subfolder)
+        if cell_meta is None:
+            # Use default values if no metadata found
+            cell_meta = CellMetadata(
+                initial_capacity=1.0,
+                c_rate=1.0,
+                temperature=298.0,
+                vmax=4.2,
+                vmin=3.0,
+            )
+            print("Using default values for PL data")
+
+        # Process all files
+        agg_df, error_dict = process_files_in_subfolder(
+            folder_path, sorted_files, cell_meta, file_names
         )
-    else:
-        print("No data available for figure generation")
+
+        if len(agg_df) == 0:
+            print(f"No data processed for {subfolder}")
+            return
+
+        # Save processed data
+        save_processed_data(agg_df, subfolder, config)
+
+        # Generate figures
+        generate_and_save_figures(agg_df, cell_meta, subfolder, error_dict, config)
+
+        # Save error log
+        save_error_log(error_dict, subfolder, config)
+
+    except Exception as e:
+        print(f"Error processing {subfolder}: {str(e)}")
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all PL subfolders with multi-threading."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting PL battery data processing with 20 threads...")
+
+    # Load metadata
+    meta_df = load_meta_properties(sheet_name="General_Infos")
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    pl_base_path = os.path.join(project_root, config.base_data_path)
+
+    # Get subfolders
+    pl_subfolders = get_pl_subfolders(pl_base_path)
+    print(f"📂 Found {len(pl_subfolders)} PL batteries: {pl_subfolders}")
+
+    # Process subfolders with 20 threads
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        # Submit all subfolder processing tasks
+        future_to_subfolder = {
+            executor.submit(
+                process_single_subfolder, subfolder, pl_base_path, meta_df, config
+            ): subfolder
+            for subfolder in pl_subfolders
+        }
+
+        # Wait for all subfolders to complete
+        for future in as_completed(future_to_subfolder):
+            subfolder = future_to_subfolder[future]
+            try:
+                future.result()
+                print(f"✅ Completed processing battery: {subfolder}")
+            except Exception as e:
+                print(f"✗ Error processing subfolder {subfolder}: {str(e)}")
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"🎉 All PL subfolders processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(pl_subfolders)} subfolders with 20 threads")
+    print(f"⚡ Average time per subfolder: {total_time/len(pl_subfolders):.2f} seconds")
+    print(f"{'='*60}")
+
+
+if __name__ == "__main__":
+    main()
+# 🎉 All PL subfolders processed successfully!
+# ⏱️  Total processing time: 00:11:20
+# 📊 Processed 3 subfolders with 20 threads
+# ⚡ Average time per subfolder: 226.88 seconds
