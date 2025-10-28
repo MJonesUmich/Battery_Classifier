@@ -444,16 +444,18 @@ def generate_single_cycle_figures(
                 - discharge_cycle_df["Test_Time(s)"].iloc[0]
             )
 
-        # generate plot, clipped last datum in case current reset to rest
+        # Generate charge plot
         fig1 = plt.figure(figsize=(10, 6))
         plt.plot(
             charge_cycle_df["Charge_Time(s)"],
             charge_cycle_df["Voltage(V)"],
-            color="blue",
+            "b-",
+            linewidth=2,
         )
-        plt.xlabel("Charge Time (s)")
-        plt.ylabel("Voltage (V)", color="blue")
-        plt.title(f"Cycle {cycle} Charge Profile")
+        plt.xlabel("Charge Time (s)", fontsize=12)
+        plt.ylabel("Voltage (V)", fontsize=12)
+        plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
+        plt.grid(True, alpha=0.3)
         save_string = os.path.join(
             battery_output_dir,
             f"Cycle_{cycle_index+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
@@ -461,15 +463,18 @@ def generate_single_cycle_figures(
         plt.savefig(save_string, dpi=100, bbox_inches="tight")
         plt.close(fig1)
 
-        # plot current on secondary axis
+        # Generate discharge plot
         fig2 = plt.figure(figsize=(10, 6))
         plt.plot(
             discharge_cycle_df["Discharge_Time(s)"],
             discharge_cycle_df["Voltage(V)"],
             "r-",
-        )  # remove last few points to avoid voltage recovery
-        plt.ylabel("Voltage (V)", color="red")
-        plt.title(f"Cycle {cycle} Discharge Profile")
+            linewidth=2,
+        )
+        plt.xlabel("Discharge Time (s)", fontsize=12)
+        plt.ylabel("Voltage (V)", fontsize=12)
+        plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
+        plt.grid(True, alpha=0.3)
         save_string = os.path.join(
             battery_output_dir,
             f"Cycle_{cycle_index+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
