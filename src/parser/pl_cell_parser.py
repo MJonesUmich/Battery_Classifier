@@ -9,11 +9,11 @@ import pandas as pd
 
 def load_meta_properties():
     # Finish function to associate file name with cell capacity, c-rate, and temperatures
-    df = pd.read_excel(
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\battery_data_mapper.xlsx",
-        sheet_name="General_Infos",
-    )
-    return df
+    # Load battery mapper data:
+    sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    meta_df = pd.read_excel(url, sheet_name="General_Infos")
+    return meta_df
 
 
 def extract_date(file_name):
