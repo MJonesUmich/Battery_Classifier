@@ -1,11 +1,13 @@
 import os
 import re
+import sys
 from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from utils.help_function import check_file_string, load_meta_properties
 
 
