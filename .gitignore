@@ -6,10 +6,10 @@
 # *.zip 
 # *.m
 assets/raw_data/*
-processed_images/*
-processed_images/.gitkeep
-processed_datasets/*
-processed_datasets/.gitkeep
+processed_images/*.csv
+
+
+processed_datasets/*.csv
 
 
 # Keep external data directory structure but ignore large files
