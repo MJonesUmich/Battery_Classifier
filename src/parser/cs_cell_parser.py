@@ -332,19 +332,45 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method = 'excel', 
 
 def generate_figures(df, vmax, vmin, c_rate, temperature, battery_ID, output_dir, tolerance=0.01, one_fig_only=False):
     unique_cycles = df['Cycle_Count'].unique()
+    
+    # If vmax or vmin are None or invalid, calculate from data
+    if vmax is None or vmin is None or vmax <= 0 or vmin <= 0:
+        data_vmax = df['Voltage(V)'].max()
+        data_vmin = df['Voltage(V)'].min()
+        vmax = data_vmax * 0.95  # Use 95% of max voltage
+        vmin = data_vmin * 1.05  # Use 105% of min voltage
+        print(f"Using calculated voltage limits: vmax={vmax:.3f}V, vmin={vmin:.3f}V")
+    
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df['Cycle_Count'] == cycle]
         
         #find where voltage first hits vmax and vmin, and where first discharge occurs
-        vmax_idx = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance].index[0]
-        vmin_idx = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance].index[0]
-        disch_start = cycle_df[cycle_df['Current(A)'] < 0 - tolerance].index[0] 
+        vmax_matches = cycle_df[cycle_df['Voltage(V)'] >= vmax - tolerance]
+        vmin_matches = cycle_df[cycle_df['Voltage(V)'] <= vmin + tolerance]
+        disch_matches = cycle_df[cycle_df['Current(A)'] < 0 - tolerance]
+        
+        if len(vmax_matches) == 0 or len(vmin_matches) == 0 or len(disch_matches) == 0:
+            print(f"Skipping cycle {cycle} - missing required voltage/current data")
+            continue
+            
+        vmax_idx = vmax_matches.index[0]
+        vmin_idx = vmin_matches.index[0]
+        disch_start = disch_matches.index[0] 
         
         #clip data to initial until Vmax, then from discharge start to Vmin
         charge_cycle_df = cycle_df.loc[0:vmax_idx].copy()
         discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx].copy()
-        charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
-        discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
+        
+        # Check if we have valid data for plotting
+        if len(charge_cycle_df) < 2 or len(discharge_cycle_df) < 2:
+            print(f"Skipping cycle {cycle} - insufficient data points after filtering")
+            continue
+            
+        # Calculate relative time for charge and discharge cycles
+        if len(charge_cycle_df) > 0:
+            charge_cycle_df["Charge_Time(s)"] = charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
+        if len(discharge_cycle_df) > 0:
+            discharge_cycle_df["Discharge_Time(s)"] = discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
         
         #generate plot, clipped last datum in case current reset to rest
         plt.figure(figsize=(10, 6))
@@ -427,7 +453,7 @@ if __name__ == "__main__":
 
             # Create output directories
             output_base_dir = "processed_datasets"
-            images_dir = "/processed_images/LCO"
+            images_dir = os.path.join("processed_images", "LCO")
             os.makedirs(output_base_dir, exist_ok=True)
             os.makedirs(images_dir, exist_ok=True)
 
@@ -467,7 +493,15 @@ if __name__ == "__main__":
             print(f"Saved CSV file: {csv_path}")
             
             # Generate figures and save to images directory
-            generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, output_dir=images_dir, one_fig_only=False)
+            try:
+                print(f"Starting figure generation for {cell_id}")
+                print(f"Data shape: {agg_df.shape}")
+                print(f"Cycles found: {agg_df['Cycle_Count'].nunique()}")
+                generate_figures(agg_df, cell_vmax, cell_vmin, cell_C_rate, cell_temperature, battery_ID=cell_id, output_dir=images_dir, one_fig_only=False)
+                print(f"Generated figures for {cell_id}")
+            except Exception as e:
+                print(f"Error generating figures for {cell_id}: {str(e)}")
+                error_dict[f"figures_{cell_id}"] = str(e)
             
             # Save error log for this subfolder
             if error_dict:
