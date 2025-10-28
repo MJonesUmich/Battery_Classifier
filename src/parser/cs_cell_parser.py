@@ -513,11 +513,9 @@ def main():
             cell_vmax = cell_df["Max_Voltage"].values[0]
             cell_vmin = cell_df["Min_Voltage"].values[0]
 
-            # Create output directories
+            # Set output directories
             output_base_dir = "processed_datasets"
             images_dir = os.path.join("processed_images", "LCO")
-            os.makedirs(output_base_dir, exist_ok=True)
-            os.makedirs(images_dir, exist_ok=True)
 
             for i_count, file_name in enumerate(sorted_files):
                 try:
