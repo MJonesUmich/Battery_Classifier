@@ -1,19 +1,57 @@
 import glob
 import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.help_function import load_meta_properties
 
-def load_meta_properties():
-    """Load battery metadata from Excel file"""
-    df = pd.read_excel(
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\battery_data_mapper.xlsx",
-        sheet_name="General_Infos",
-    )
-    return df
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for Stanford data processing."""
+
+    base_data_path: str = "assets/raw_data/Stanford"
+    output_data_path: str = "processed_datasets"
+    output_images_path: str = "processed_images"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
+    battery_type: str  # LFP, NCA, or NMC
 
 
 def extract_battery_info_from_filename(file_name):
@@ -370,9 +408,10 @@ def generate_figures(
     c_rate,
     temperature,
     battery_ID,
+    battery_type,
     tolerance=0.01,
     one_fig_only=False,
-    images_folder=".",
+    output_folder=None,
 ):
     """Generate charge/discharge profile plots based on available data"""
     unique_cycles = df["Cycle_Count"].unique()
@@ -435,10 +474,13 @@ def generate_figures(
                 )
                 plt.xlabel("Charge Time (s)")
                 plt.ylabel("Voltage (V)", color="blue")
-                plt.title(f"Cycle {cycle} Charge Profile - Stanford LFP")
-                save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_Stanford_{battery_ID}.png"
-                save_path = os.path.join(images_folder, save_string)
-                plt.savefig(save_path)
+                plt.title(f"Cycle {cycle} Charge Profile - Stanford {battery_type}")
+                save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+                if output_folder:
+                    save_path = os.path.join(output_folder, save_string)
+                else:
+                    save_path = save_string
+                plt.savefig(save_path, dpi=100, bbox_inches="tight")
                 plt.close()
 
         # Generate discharge plot if discharge data exists
@@ -472,10 +514,13 @@ def generate_figures(
                 )
                 plt.xlabel("Discharge Time (s)")
                 plt.ylabel("Voltage (V)", color="red")
-                plt.title(f"Cycle {cycle} Discharge Profile - Stanford LFP")
-                save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_Stanford_{battery_ID}.png"
-                save_path = os.path.join(images_folder, save_string)
-                plt.savefig(save_path)
+                plt.title(f"Cycle {cycle} Discharge Profile - Stanford {battery_type}")
+                save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+                if output_folder:
+                    save_path = os.path.join(output_folder, save_string)
+                else:
+                    save_path = save_string
+                plt.savefig(save_path, dpi=100, bbox_inches="tight")
                 plt.close()
 
         # Exit function after 1st run if one_fig_only is True
@@ -483,166 +528,294 @@ def generate_figures(
             break
 
 
-def main():
-    """Main processing function"""
-    meta_df = load_meta_properties()
+def get_stanford_battery_types(base_path):
+    """Get all Stanford battery type subfolders (LFP, NCA, NMC)."""
+    battery_types = []
+    for item in os.listdir(base_path):
+        item_path = os.path.join(base_path, item)
+        if os.path.isdir(item_path) and item.upper() in ["LFP", "NCA", "NMC"]:
+            battery_types.append(item.upper())
+    return battery_types
 
-    # Get all Excel files from Stanford battery folder
-    stanford_folder = (
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\LFP"
+
+def get_cell_metadata(
+    meta_df: pd.DataFrame, battery_id: str, temp_k: float, battery_type: str
+) -> Optional[CellMetadata]:
+    """Get cell metadata for a given battery ID and temperature."""
+    cell_df, mapper_id = find_mapper_entry(meta_df, battery_id, temp_k)
+
+    if cell_df.empty:
+        print(
+            f"No metadata found for {battery_id} at {temp_k}K, using defaults for {battery_type}"
+        )
+        # Default values based on battery type
+        defaults = {
+            "LFP": {"capacity": 2.5, "vmax": 3.6, "vmin": 2.0},
+            "NCA": {"capacity": 3.0, "vmax": 4.2, "vmin": 2.5},
+            "NMC": {"capacity": 3.0, "vmax": 4.2, "vmin": 2.5},
+        }
+        default = defaults.get(battery_type, defaults["LFP"])
+        return CellMetadata(
+            initial_capacity=default["capacity"],
+            c_rate=1.0,
+            temperature=temp_k,
+            vmax=default["vmax"],
+            vmin=default["vmin"],
+            battery_type=battery_type,
+        )
+
+    return CellMetadata(
+        initial_capacity=cell_df["Initial_Capacity_Ah"].values[0],
+        c_rate=1.0,
+        temperature=temp_k,
+        vmax=(
+            cell_df["Max_Voltage"].values[0]
+            if not pd.isna(cell_df["Max_Voltage"].values[0])
+            else 3.6
+        ),
+        vmin=cell_df["Min_Voltage"].values[0],
+        battery_type=battery_type,
     )
-    # stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\NCA'
-    # stanford_folder = r'C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\Stanford\NMC'
 
-    # Extract battery type from folder path
-    battery_type = os.path.basename(stanford_folder).upper()  # LFP, NCA, or NMC
 
-    # Get all xlsx files from all temperature subdirectories
-    file_pattern = os.path.join(stanford_folder, "**", "*.xlsx")
+def process_battery_group(
+    group_key: str,
+    files: List[Dict],
+    meta_df: pd.DataFrame,
+    battery_type: str,
+    config: ProcessingConfig,
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Process a group of files for a single battery."""
+    error_dict = {}
+
+    print(f"\nProcessing group: {group_key}")
+
+    # Get battery metadata
+    battery_id = files[0]["battery_id"]
+    temp_k = files[0]["temp_k"]
+
+    cell_meta = get_cell_metadata(meta_df, battery_id, temp_k, battery_type)
+
+    # Sort files by C-rate for processing order
+    files.sort(key=lambda x: x["c_rate"])
+
+    agg_df = pd.DataFrame()
+
+    for i, file_info in enumerate(files):
+        try:
+            df = parse_file(
+                file_info["path"],
+                cell_meta.initial_capacity,
+                file_info["c_rate"],
+                cell_meta.vmin,
+                cell_meta.vmax,
+            )
+            df = update_df(df, agg_df)
+            agg_df = pd.concat([agg_df, df], ignore_index=True)
+
+        except Exception as e:
+            error_dict[file_info["name"]] = str(e)
+            print(f"Error processing {file_info['name']}: {e}")
+
+    return agg_df, error_dict, cell_meta, battery_id, temp_k
+
+
+def save_processed_data(
+    agg_df: pd.DataFrame,
+    battery_id: str,
+    temp_k: float,
+    battery_type: str,
+    config: ProcessingConfig,
+) -> str:
+    """Save processed data to CSV file."""
+    available_columns = [
+        col for col in config.required_columns if col in agg_df.columns
+    ]
+    output_df = agg_df[available_columns]
+
+    # Create output directory for this battery type
+    output_data_path = os.path.join(config.output_data_path, battery_type)
+    os.makedirs(output_data_path, exist_ok=True)
+
+    csv_filename = f"{battery_id.lower()}_{int(temp_k)}k_aggregated_data.csv"
+    csv_path = os.path.join(output_data_path, csv_filename)
+    output_df.to_csv(csv_path, index=False)
+    print(f"💾 Saved CSV file: {csv_path}")
+
+    return csv_path
+
+
+def generate_and_save_figures(
+    agg_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    battery_id: str,
+    temp_k: float,
+    c_rate: float,
+    config: ProcessingConfig,
+) -> None:
+    """Generate and save figures for the processed data."""
+    try:
+        print(
+            f"🖼️  Starting figure generation for {battery_id} at {temp_k}K ({agg_df.shape[0]} data points)"
+        )
+
+        # Create battery-specific subdirectory
+        battery_images_path = os.path.join(
+            config.output_images_path, cell_meta.battery_type, battery_id
+        )
+        os.makedirs(battery_images_path, exist_ok=True)
+
+        generate_figures(
+            agg_df,
+            cell_meta.vmax,
+            cell_meta.vmin,
+            c_rate,
+            temp_k,
+            battery_id,
+            cell_meta.battery_type,
+            one_fig_only=False,
+            output_folder=battery_images_path,
+        )
+        print(f"✅ Generated figures for {battery_id}")
+
+    except Exception as e:
+        print(f"❌ Error generating figures for {battery_id}: {str(e)}")
+
+
+def save_error_log(
+    error_dict: Dict[str, str], battery_type: str, config: ProcessingConfig
+) -> None:
+    """Save error log for the battery type."""
+    if not error_dict:
+        return
+
+    error_df = pd.DataFrame(
+        list(error_dict.items()), columns=["File_Name", "Error_Message"]
+    )
+    output_data_path = os.path.join(config.output_data_path, battery_type)
+    os.makedirs(output_data_path, exist_ok=True)
+    error_log_path = os.path.join(
+        output_data_path, f"error_log_stanford_{battery_type.lower()}.csv"
+    )
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
+
+
+def process_battery_type(
+    battery_type: str,
+    base_path: str,
+    meta_df: pd.DataFrame,
+    config: ProcessingConfig,
+) -> None:
+    """Process all files for a specific battery type (LFP, NCA, or NMC)."""
+    print(f"\n{'='*60}")
+    print(f"Processing Stanford {battery_type} batteries")
+    print(f"{'='*60}")
+
+    # Get all xlsx files from battery type folder
+    battery_type_folder = os.path.join(base_path, battery_type)
+    file_pattern = os.path.join(battery_type_folder, "**", "*.xlsx")
     file_paths = glob.glob(file_pattern, recursive=True)
 
-    print(f"Found {len(file_paths)} Stanford {battery_type} files")
+    print(f"📂 Found {len(file_paths)} {battery_type} files")
 
     # Group files by battery ID and temperature
     file_groups = {}
     for file_path in file_paths:
         file_name = os.path.basename(file_path)
-        battery_id, c_rate, temp_k = extract_battery_info_from_filename(file_name)
+        try:
+            battery_id, c_rate, temp_k = extract_battery_info_from_filename(file_name)
 
-        # Create a key for grouping
-        group_key = f"{battery_id}_{temp_k:.0f}K"
+            # Create a key for grouping
+            group_key = f"{battery_id}_{temp_k:.0f}K"
 
-        if group_key not in file_groups:
-            file_groups[group_key] = []
+            if group_key not in file_groups:
+                file_groups[group_key] = []
 
-        file_groups[group_key].append(
-            {
-                "path": file_path,
-                "name": file_name,
-                "battery_id": battery_id,
-                "c_rate": c_rate,
-                "temp_k": temp_k,
-            }
-        )
+            file_groups[group_key].append(
+                {
+                    "path": file_path,
+                    "name": file_name,
+                    "battery_id": battery_id,
+                    "c_rate": c_rate,
+                    "temp_k": temp_k,
+                }
+            )
+        except Exception as e:
+            print(f"Error parsing filename {file_name}: {e}")
 
-    print(f"Found {len(file_groups)} battery groups")
-
-    # Create output folder for this battery type
-    output_folder = f"stanford_{battery_type}"
-    images_folder = os.path.join(output_folder, "images")
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-        print(f"Created output folder: {output_folder}")
-    if not os.path.exists(images_folder):
-        os.makedirs(images_folder)
-        print(f"Created images folder: {images_folder}")
+    print(f"📊 Found {len(file_groups)} battery groups for {battery_type}")
 
     # Process each group
-    error_dict = {}
+    all_errors = {}
 
     for group_key, files in file_groups.items():
-        print(f"Processing group: {group_key}")
-
-        # Get battery metadata
-        battery_id = files[0]["battery_id"]
-        temp_k = files[0]["temp_k"]
-
-        # Find mapper entry using the new matching function
-        cell_df, mapper_id = find_mapper_entry(meta_df, battery_id, temp_k)
-
-        if cell_df.empty:
-            cell_initial_capacity = 2.5  # Default for LFP
-            cell_vmax = 3.6  # Default for LFP
-            cell_vmin = 2.0  # Default for LFP
-        else:
-            cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-            cell_vmax = (
-                cell_df["Max_Voltage"].values[0]
-                if not pd.isna(cell_df["Max_Voltage"].values[0])
-                else 3.6
+        try:
+            agg_df, error_dict, cell_meta, battery_id, temp_k = process_battery_group(
+                group_key, files, meta_df, battery_type, config
             )
-            cell_vmin = cell_df["Min_Voltage"].values[0]
 
-        # Sort files by C-rate for processing order
-        files.sort(key=lambda x: x["c_rate"])
+            if len(agg_df) > 0:
+                # Save processed data
+                save_processed_data(agg_df, battery_id, temp_k, battery_type, config)
 
-        agg_df = pd.DataFrame()
-
-        for i, file_info in enumerate(files):
-            try:
-                df = parse_file(
-                    file_info["path"],
-                    cell_initial_capacity,
-                    file_info["c_rate"],
-                    cell_vmin,
-                    cell_vmax,
-                )
-                df = update_df(df, agg_df)
-                agg_df = pd.concat([agg_df, df], ignore_index=True)
-
-            except Exception as e:
-                error_dict[file_info["name"]] = str(e)
-                print(f"Error processing {file_info['name']}: {e}")
-
-        # Add battery metadata to aggregated data
-        if len(agg_df) > 0:
-            agg_df["Battery_ID"] = battery_id
-            agg_df["Temperature_K"] = temp_k
-
-            # Export individual CSV for this battery with only specified fields
-            try:
-                # Select only the required fields and rename Voltage(V) to Voltage(y)
-                export_df = agg_df[
-                    [
-                        "Current(A)",
-                        "Voltage(V)",
-                        "Test_Time(s)",
-                        "Cycle_Count",
-                        "Delta_Time(s)",
-                        "Delta_Ah",
-                        "Ah_throughput",
-                        "EFC",
-                        "C_rate",
-                    ]
-                ].copy()
-                export_df = export_df.rename(columns={"Voltage(V)": "Voltage(y)"})
-
-                # Create filename for individual battery export (corrected format)
-                individual_filename = f"{battery_id}_{temp_k:.0f}K.csv"
-                individual_filepath = os.path.join(output_folder, individual_filename)
-                export_df.to_csv(individual_filepath, index=False)
-                print(
-                    f"Exported individual battery data: {len(export_df)} rows to {individual_filepath}"
+                # Generate figures
+                generate_and_save_figures(
+                    agg_df, cell_meta, battery_id, temp_k, files[0]["c_rate"], config
                 )
 
-            except Exception as e:
-                print(f"Error exporting individual CSV for {battery_id}: {e}")
+            # Collect errors
+            all_errors.update(error_dict)
 
-            # Generate figures for this battery
-            try:
-                generate_figures(
-                    agg_df,
-                    cell_vmax,
-                    cell_vmin,
-                    files[0]["c_rate"],
-                    temp_k,
-                    battery_id,
-                    one_fig_only=True,
-                    images_folder=images_folder,
-                )
-            except Exception as e:
-                print(f"Error generating figures for {battery_id}: {e}")
-
-    print(f"Processing completed for {battery_type} battery type.")
+        except Exception as e:
+            print(f"Error processing group {group_key}: {e}")
+            all_errors[group_key] = str(e)
 
     # Save error log
-    if error_dict:
-        error_df = pd.DataFrame(
-            list(error_dict.items()), columns=["File_Name", "Error_Message"]
-        )
-        error_log_filename = f"stanford_{battery_type}_error_log.csv"
-        error_df.to_csv(error_log_filename, index=False)
-        print(f"Saved error log: {len(error_dict)} errors to {error_log_filename}")
+    save_error_log(all_errors, battery_type, config)
+
+    print(f"✅ Completed processing for {battery_type}")
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all Stanford battery types."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting Stanford battery data processing...")
+
+    # Load metadata
+    meta_df = load_meta_properties(sheet_name="General_Infos")
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    stanford_base_path = os.path.join(project_root, config.base_data_path)
+
+    # Get battery types
+    battery_types = get_stanford_battery_types(stanford_base_path)
+    print(f"📂 Found {len(battery_types)} battery types: {battery_types}")
+
+    # Process each battery type
+    for battery_type in battery_types:
+        process_battery_type(battery_type, stanford_base_path, meta_df, config)
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"🎉 All Stanford battery types processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(battery_types)} battery types")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
