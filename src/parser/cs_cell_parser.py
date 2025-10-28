@@ -403,7 +403,7 @@ def generate_single_cycle_figures(
     c_rate,
     temperature,
     battery_ID,
-    output_dir,
+    battery_output_dir,
     tolerance=0.01,
 ):
     """Generate figures for a single cycle - designed for multithreading."""
@@ -455,7 +455,7 @@ def generate_single_cycle_figures(
         plt.ylabel("Voltage (V)", color="blue")
         plt.title(f"Cycle {cycle} Charge Profile")
         save_string = os.path.join(
-            output_dir,
+            battery_output_dir,
             f"Cycle_{cycle_index+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
         )
         plt.savefig(save_string, dpi=100, bbox_inches="tight")
@@ -471,7 +471,7 @@ def generate_single_cycle_figures(
         plt.ylabel("Voltage (V)", color="red")
         plt.title(f"Cycle {cycle} Discharge Profile")
         save_string = os.path.join(
-            output_dir,
+            battery_output_dir,
             f"Cycle_{cycle_index+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
         )
         plt.savefig(save_string, dpi=100, bbox_inches="tight")
@@ -493,8 +493,9 @@ def generate_figures(
     one_fig_only=False,
     max_workers=20,  # Increased thread count for cycle processing
 ):
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
+    # Create battery-specific subdirectory
+    battery_output_dir = os.path.join(output_dir, battery_ID)
+    os.makedirs(battery_output_dir, exist_ok=True)
 
     unique_cycles = df["Cycle_Count"].unique()
 
@@ -530,7 +531,7 @@ def generate_figures(
                 c_rate,
                 temperature,
                 battery_ID,
-                output_dir,
+                battery_output_dir,
                 tolerance,
             ): (cycle, i)
             for cycle_df, cycle, i in cycle_tasks
@@ -791,3 +792,6 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 
 if __name__ == "__main__":
     main()
+# ⏱️  Total processing time: 00:33:58
+# 📊 Processed 10 subfolders with 20 threads
+# ⚡ Average time per subfolder: 203.80 seconds
