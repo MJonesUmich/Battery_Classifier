@@ -1,14 +1,56 @@
 import os
 import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from utils.help_function import check_file_string, load_meta_properties
+
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for CX2 data processing."""
+
+    base_data_path: str = "assets/raw_data/CX2"
+    output_data_path: str = "processed_datasets/LCO"
+    output_images_path: str = "processed_images/LCO"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
 
 
 def extract_date(file_name, orientation="last"):
@@ -289,100 +331,143 @@ def split_charge_discharge(
 
 
 def generate_figures(
-    out_folder,
     charge_cycle_df,
     discharge_cycle_df,
     c_rate,
     temperature,
     battery_ID,
     cycle,
+    output_dir,
 ):
-    # Set plot directory
-    if not os.path.exists(out_folder):
-        os.makedirs(out_folder)
+    """Generate charge and discharge figures."""
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
 
-    # generate plot, clipped last datum in case current reset to rest
+    # Generate charge plot
     fig = plt.figure(figsize=(10, 6))
     plt.plot(
-        charge_cycle_df["Charge_Time(s)"], charge_cycle_df["Voltage(V)"], color="blue"
+        charge_cycle_df["Charge_Time(s)"],
+        charge_cycle_df["Voltage(V)"],
+        "b-",
+        linewidth=2,
     )
-    plt.xlabel("Charge Time (s)")
-    plt.ylabel("Voltage (V)", color="blue")
-    plt.title(f"Cycle {cycle} Charge Profile")
-    save_string = f"{out_folder}\Cycle_{cycle}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-    fig.savefig(save_string)
+    plt.xlabel("Charge Time (s)", fontsize=12)
+    plt.ylabel("Voltage (V)", fontsize=12)
+    plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    save_string = f"Cycle_{cycle}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+    save_path = os.path.join(output_dir, save_string)
+    fig.savefig(save_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
 
-    # plot current on secondary axis
+    # Generate discharge plot
     fig = plt.figure(figsize=(10, 6))
     plt.plot(
-        discharge_cycle_df["Discharge_Time(s)"], discharge_cycle_df["Voltage(V)"], "r-"
-    )  # remove last few points to avoid voltage recovery
-    plt.ylabel("Voltage (V)", color="red")
-    plt.title(f"Cycle {cycle} Discharge Profile")
-    save_string = f"{out_folder}\Cycle_{cycle}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-    fig.savefig(save_string)
+        discharge_cycle_df["Discharge_Time(s)"],
+        discharge_cycle_df["Voltage(V)"],
+        "r-",
+        linewidth=2,
+    )
+    plt.xlabel("Discharge Time (s)", fontsize=12)
+    plt.ylabel("Voltage (V)", fontsize=12)
+    plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    save_string = f"Cycle_{cycle}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
+    save_path = os.path.join(output_dir, save_string)
+    fig.savefig(save_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
 
 
-def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.001):
-    meta_df = load_meta_properties()
-    agg_folder_df = pd.DataFrame()
-    agg_error_df = pd.DataFrame()
-    out_img_folder, out_data_folder = output_folder_paths
+def get_cell_metadata(meta_df: pd.DataFrame, cell_id: str) -> Optional[CellMetadata]:
+    """Get cell metadata for a given battery ID."""
+    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
 
-    for folder_path in folder_paths:
+    if len(cell_df) == 0:
+        print(f"Available Battery_IDs: {meta_df['Battery_ID'].dropna().unique()}")
+        print(f"No metadata found for battery ID: {cell_id}")
+        return None
+
+    return CellMetadata(
+        initial_capacity=cell_df["Initial_Capacity_Ah"].values[0],
+        c_rate=cell_df["C_rate"].values[0],
+        temperature=cell_df["Temperature (K)"].values[0],
+        vmax=cell_df["Max_Voltage"].values[0],
+        vmin=cell_df["Min_Voltage"].values[0],
+    )
+
+
+def process_single_subfolder(
+    folder_path: str,
+    meta_df: pd.DataFrame,
+    config: ProcessingConfig,
+    tolerance: float = 0.001,
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Process a single CX2 subfolder completely."""
+    error_dict = {}
+
+    # Extract cell_id from folder path
+    cell_id = os.path.basename(folder_path)
+    print(f"\n📁 Processing folder: {cell_id}")
+
+    try:
+        # Get file list
         file_names = [file for file in os.listdir(folder_path)]
 
-        # skip files < 200kb and sort by date of test:
+        # Skip files < 200kb and filter bad files
         file_names = [
             file
             for file in file_names
             if os.path.getsize(os.path.join(folder_path, file)) > 200 * 1024
             and check_file_string(file) != "bad"
         ]
+
+        if len(file_names) == 0:
+            print(f"⚠️  No valid files found in {cell_id}")
+            return pd.DataFrame(), error_dict
+
         sorted_files, file_dates = sort_files(file_names, orientation="last")
+        print(f"📂 Found {len(sorted_files)} files for {cell_id}")
 
-        error_dict = {}
-        agg_df = pd.DataFrame()
+        # Get cell metadata
+        cell_meta = get_cell_metadata(meta_df, cell_id)
+        if cell_meta is None:
+            return pd.DataFrame(), error_dict
 
-        cell_id = folder_path.split("\\")[-1]
-        cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
-        cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-        cell_C_rate = cell_df["C_rate"].values[0]
-        cell_temperature = cell_df["Temperature (K)"].values[0]
-        cell_vmax = cell_df["Max_Voltage"].values[0]
-        cell_vmin = cell_df["Min_Voltage"].values[0]
-
+        # Process all files
         agg_file_df = pd.DataFrame()
         cycle_counter = 1
-        for i_count, file_name in enumerate(file_names):
-            # try:
-            print("this is the file name: ", file_name)
-            file_path = os.path.join(folder_path, file_name)
-            if file_name.endswith(".txt"):
-                method = "text"
-            elif file_name.endswith(".xlsx") or file_name.endswith(".xls"):
-                method = "excel"
 
-            df = parse_file(file_path, cell_initial_capacity, cell_C_rate, method)
-            unique_cycles = df["Cycle_Count"].unique()
-            agg_cycle_df = pd.DataFrame()
-            for iteration_num, cycle in enumerate(unique_cycles):
-                print("This is the cycle num: ", cycle)
-                cycle_df = df[df["Cycle_Count"] == cycle]
-                vmax_candidates = cycle_df[
-                    cycle_df["Voltage(V)"] >= cell_vmax - tolerance
-                ]
-                vmin_candidates = cycle_df[
-                    cycle_df["Voltage(V)"] <= cell_vmin + tolerance
-                ]
-
-                if vmax_candidates.empty or vmin_candidates.empty:
-                    continue
+        for i_count, file_name in enumerate(sorted_files):
+            try:
+                file_path = os.path.join(folder_path, file_name)
+                if file_name.endswith(".txt"):
+                    method = "text"
+                elif file_name.endswith(".xlsx") or file_name.endswith(".xls"):
+                    method = "excel"
                 else:
+                    continue
+
+                df = parse_file(
+                    file_path, cell_meta.initial_capacity, cell_meta.c_rate, method
+                )
+                unique_cycles = df["Cycle_Count"].unique()
+                agg_cycle_df = pd.DataFrame()
+
+                for iteration_num, cycle in enumerate(unique_cycles):
+                    cycle_df = df[df["Cycle_Count"] == cycle]
+                    vmax_candidates = cycle_df[
+                        cycle_df["Voltage(V)"] >= cell_meta.vmax - tolerance
+                    ]
+                    vmin_candidates = cycle_df[
+                        cycle_df["Voltage(V)"] <= cell_meta.vmin + tolerance
+                    ]
+
+                    if vmax_candidates.empty or vmin_candidates.empty:
+                        continue
+
                     vmax_idx = vmax_candidates.index[0]
                     vmin_idx = vmin_candidates.index[0]
+
                     if len(cycle_df) > 5:
                         (
                             interp_charge_cycle_df,
@@ -394,21 +479,24 @@ def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.00
                             vmin_idx,
                             iteration_num,
                             cycle_df,
-                            cell_vmax,
-                            cell_vmin,
+                            cell_meta.vmax,
+                            cell_meta.vmin,
                             tolerance=0.01,
                         )
-                        if validity != "Valid":
-                            continue
-                        else:
+
+                        if validity == "Valid":
+                            # Create battery-specific subdirectory
+                            battery_images_path = os.path.join(
+                                config.output_images_path, cell_id
+                            )
                             generate_figures(
-                                out_img_folder,
                                 interp_charge_cycle_df,
                                 interp_discharge_cycle_df,
-                                cell_C_rate,
-                                cell_temperature,
+                                cell_meta.c_rate,
+                                cell_meta.temperature,
                                 cell_id,
                                 cycle_counter,
+                                battery_images_path,
                             )
                             agg_cycle_df = pd.concat(
                                 [agg_cycle_df, inter_cycle_df],
@@ -416,54 +504,144 @@ def process_CX_datafiles(input_folder_paths, output_folder_paths, tolerance=0.00
                                 ignore_index=True,
                             )
                             cycle_counter += 1
-            agg_file_df = pd.concat(
-                [agg_file_df, agg_cycle_df], axis=0, ignore_index=True
-            )
-            # except add failed files to dictionary with error message
-            # except Exception as e:
-            #     error_dict[file_name] = str(e)
 
-            print(f"{round(i_count/len(file_names)*100,1)}% Complete")
+                agg_file_df = pd.concat(
+                    [agg_file_df, agg_cycle_df], axis=0, ignore_index=True
+                )
 
-        # send to df and output:
-        error_df = pd.DataFrame(
-            list(error_dict.items()), columns=["File_Name", "Error_Message"]
-        )
-        agg_error_df = pd.concat([agg_error_df, error_df], axis=0, ignore_index=True)
+            except Exception as e:
+                error_dict[file_name] = str(e)
+                print(f"❌ Error processing {file_name}: {e}")
 
-        # Export this battery's aggregated data
-        battery_csv_name = f"{cell_id}_aggregated_data.csv"
-        battery_csv_path = os.path.join(out_data_folder, battery_csv_name)
-        agg_file_df.to_csv(battery_csv_path, index=False)
-        print(f"battery_csv file exported to: {battery_csv_path}")
+            if (i_count + 1) % 5 == 0 or i_count == len(sorted_files) - 1:
+                print(
+                    f"📁 {cell_id}: Processed {i_count + 1}/{len(sorted_files)} files ({round((i_count+1)/len(sorted_files)*100,1)}%)"
+                )
 
-    # Export Datafiles
-    if not os.path.exists(out_data_folder):
-        os.makedirs(out_data_folder)
-    agg_error_df.to_csv(os.path.join(out_data_folder, "error_log.csv"), index=False)
+        # Save processed data
+        if len(agg_file_df) > 0:
+            available_columns = [
+                col for col in config.required_columns if col in agg_file_df.columns
+            ]
+            output_df = agg_file_df[available_columns]
+
+            csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
+            csv_path = os.path.join(config.output_data_path, csv_filename)
+            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            output_df.to_csv(csv_path, index=False)
+            print(f"💾 Saved CSV file: {csv_path}")
+
+        return agg_file_df, error_dict
+
+    except Exception as e:
+        print(f"❌ Error processing {cell_id}: {str(e)}")
+        error_dict[cell_id] = str(e)
+        return pd.DataFrame(), error_dict
+
+
+def save_error_log(error_dict: Dict[str, str], config: ProcessingConfig) -> None:
+    """Save error log for all batteries."""
+    if not error_dict:
+        return
+
+    error_df = pd.DataFrame(
+        list(error_dict.items()), columns=["File_Name", "Error_Message"]
+    )
+    error_log_path = os.path.join(config.output_data_path, "error_log_cx2.csv")
+    os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
+
+
+def get_cx2_subfolders(base_path):
+    """Get all CX2 subfolders from the base path."""
+    subfolders = [
+        f
+        for f in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, f)) and f.upper().startswith("CX2_")
+    ]
+    return subfolders
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all CX2 subfolders with multi-threading."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting CX2 battery data processing with 20 threads...")
+
+    # Load metadata
+    meta_df = load_meta_properties()
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    cx2_base_path = os.path.join(project_root, config.base_data_path)
+
+    # Update config paths to absolute paths
+    config.output_data_path = os.path.join(project_root, config.output_data_path)
+    config.output_images_path = os.path.join(project_root, config.output_images_path)
+
+    # Get subfolders
+    cx2_subfolders = get_cx2_subfolders(cx2_base_path)
+    print(f"📂 Found {len(cx2_subfolders)} CX2 batteries: {cx2_subfolders}")
+
+    # Build folder paths
+    folder_paths = [
+        os.path.join(cx2_base_path, subfolder) for subfolder in cx2_subfolders
+    ]
+
+    # Collect all errors
+    all_errors = {}
+
+    # Process subfolders with 20 threads
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        # Submit all subfolder processing tasks
+        future_to_subfolder = {
+            executor.submit(
+                process_single_subfolder, folder_path, meta_df, config, 0.001
+            ): os.path.basename(folder_path)
+            for folder_path in folder_paths
+        }
+
+        # Wait for all subfolders to complete
+        for future in as_completed(future_to_subfolder):
+            subfolder = future_to_subfolder[future]
+            try:
+                agg_df, error_dict = future.result()
+                all_errors.update(error_dict)
+                print(f"✅ Completed processing battery: {subfolder}")
+            except Exception as e:
+                print(f"✗ Error processing subfolder {subfolder}: {str(e)}")
+                all_errors[subfolder] = str(e)
+
+    # Save error log
+    save_error_log(all_errors, config)
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"🎉 All CX2 subfolders processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(cx2_subfolders)} subfolders with 20 threads")
+    print(
+        f"⚡ Average time per subfolder: {total_time/len(cx2_subfolders):.2f} seconds"
+    )
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    # Example run through on 1 file
-    folder_paths = [
-        r"../../assets/raw_data/CX2/cx2_16",
-        r"../../assets/raw_data/CX2/cx2_8",
-        r"../../assets/raw_data/CX2/cx2_33",
-        r"../../assets/raw_data/CX2/cx2_34",
-        r"../../assets/raw_data/CX2/cx2_35",
-        r"../../assets/raw_data/CX2/cx2_36",
-        r"../../assets/raw_data/CX2/cx2_37",
-        r"../../assets/raw_data/CX2/cx2_38",
-    ]
-
-    process_CX_datafiles(
-        folder_paths,
-        output_folder_paths=[
-            r"../../processed_images/LCO",
-            r"../../processed_datasets/LCO",
-        ],
-        tolerance=0.001,
-    )
-
-
-# Need to Export: Current(A), Voltage(V), Test_Time(s), Cycle_Count, Delta Time(s), Delta_Ah, Ah_throughput, EFC, C-rate
+    main()
+# 🎉 All CX2 subfolders processed successfully!
+# ⏱️  Total processing time: 00:45:31
+# 📊 Processed 9 subfolders with 20 threads
+# ⚡ Average time per subfolder: 303.47 seconds

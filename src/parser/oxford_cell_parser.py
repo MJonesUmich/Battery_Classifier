@@ -1,18 +1,54 @@
 import os
+import sys
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.help_function import load_meta_properties
 
-def load_meta_properties(sheet_name="General_Infos"):
-    # Finish function to associate file name with cell capacity, c-rate, and temperatures
-    # Load battery mapper data:
-    sheet_id = "19L7_7HpOUagvRAh6GNOrhcjQpbEu97kx"
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-    meta_df = pd.read_excel(url, sheet_name=sheet_name)
-    return meta_df
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for Oxford data processing."""
+
+    base_data_path: str = "assets/raw_data/Oxford"
+    output_data_path: str = "processed_datasets/LCO"
+    output_images_path: str = "processed_images/LCO"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
 
 
 def extract_voltage_limits_from_mat_full(file_path, cell_number=1, percentile=99):
@@ -524,9 +560,8 @@ def generate_figures(
     tolerance=0.01,
     one_fig_only=False,
 ):
-    # Create images subdirectory
-    images_dir = os.path.join(output_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
+    # Ensure output directory exists (directly use output_dir, no extra 'images' folder)
+    os.makedirs(output_dir, exist_ok=True)
 
     unique_cycles = df["Cycle_Count"].unique()
     for i, cycle in enumerate(unique_cycles):
@@ -600,8 +635,8 @@ def generate_figures(
             plt.ylabel("Voltage (V)", color="blue")
             plt.title(f"Cycle {cycle} Charge Profile")
             save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(images_dir, save_string)
-            plt.savefig(save_path)
+            save_path = os.path.join(output_dir, save_string)
+            plt.savefig(save_path, dpi=100, bbox_inches="tight")
             plt.close()
 
         # Check if we have valid discharge data and vmin was reached
@@ -635,8 +670,8 @@ def generate_figures(
                 plt.ylabel("Voltage (V)", color="red")
                 plt.title(f"Cycle {cycle} Discharge Profile")
                 save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-                save_path = os.path.join(images_dir, save_string)
-                plt.savefig(save_path)
+                save_path = os.path.join(output_dir, save_string)
+                plt.savefig(save_path, dpi=100, bbox_inches="tight")
                 plt.close()
 
         # Exit function after 1st run if one_fig_only is True
@@ -644,123 +679,187 @@ def generate_figures(
             break
 
 
-if __name__ == "__main__":
-    # Process Oxford Battery Degradation Dataset
-    file_path = r"C:\Users\zhzha\Documents\github\Battery_Classifier\assets\raw_data\Oxford\Oxford_Battery_Degradation_Dataset_1.mat"
-    cells_to_process = range(1, 9)  # Full file has cells 1-8
-
-    print(f"Processing {file_path}")
-    print(f"Dataset: Oxford Battery Degradation Dataset")
-
-    # Create OXFORD_LCO directory
-    output_dir = "OXFORD_LCO"
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Created output directory: {output_dir}")
-
-    error_dict = {}
-
-    # Get Oxford battery metadata
-    # For Oxford cells, use a generic Battery_ID or specific IDs if available
-    cell_id_base = "Oxford_Cell"
-
+def get_cell_metadata(cell_number: int, vmax: float, vmin: float) -> CellMetadata:
+    """Get cell metadata for Oxford cells."""
     # Oxford battery specifications from readme
     # Kokam CO LTD, SLPB533459H4, 740mAh = 0.74Ah
-    cell_initial_capacity = 0.74  # Ah
-    cell_C_rate = 1.0  # 1C rate (740mA)
-    cell_temperature = 273.15 + 40  # 40°C in Kelvin
+    return CellMetadata(
+        initial_capacity=0.74,  # Ah
+        c_rate=1.0,  # 1C rate (740mA)
+        temperature=273.15 + 40,  # 40°C in Kelvin
+        vmax=vmax,
+        vmin=vmin,
+    )
+
+
+def process_single_cell(
+    file_path: str,
+    cell_number: int,
+    cell_meta: CellMetadata,
+    config: ProcessingConfig,
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Process a single Oxford cell."""
+    error_msg = None
+
+    try:
+        print(f"\nProcessing Cell {cell_number}...")
+
+        # Parse the mat file
+        df = parse_mat_file(
+            file_path,
+            cell_meta.initial_capacity,
+            cell_meta.c_rate,
+            cell_meta.vmax,
+            cell_meta.vmin,
+            cell_number=cell_number,
+        )
+
+        return df, error_msg
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Error processing Cell {cell_number}: {error_msg}")
+        return pd.DataFrame(), error_msg
+
+
+def save_processed_data(
+    df: pd.DataFrame,
+    cell_number: int,
+    cell_meta: CellMetadata,
+    config: ProcessingConfig,
+) -> str:
+    """Save processed data to CSV file."""
+    available_columns = [col for col in config.required_columns if col in df.columns]
+    output_df = df[available_columns]
+
+    csv_filename = (
+        f"oxford_cell{cell_number}_{int(cell_meta.temperature)}k_aggregated_data.csv"
+    )
+    csv_path = os.path.join(config.output_data_path, csv_filename)
+
+    os.makedirs(config.output_data_path, exist_ok=True)
+    output_df.to_csv(csv_path, index=False)
+    print(f"💾 Saved CSV file: {csv_path}")
+
+    return csv_path
+
+
+def generate_and_save_figures(
+    df: pd.DataFrame,
+    cell_number: int,
+    cell_meta: CellMetadata,
+    config: ProcessingConfig,
+) -> None:
+    """Generate and save figures for the processed data."""
+    try:
+        print(
+            f"🖼️  Starting figure generation for Cell {cell_number} ({df.shape[0]} data points)"
+        )
+
+        # Create cell-specific subdirectory (directly under LCO, no extra 'images' folder)
+        cell_id = f"Oxford_Cell{cell_number}"
+        battery_images_path = os.path.join(config.output_images_path, cell_id)
+        os.makedirs(battery_images_path, exist_ok=True)
+
+        generate_figures(
+            df,
+            cell_meta.vmax,
+            cell_meta.vmin,
+            cell_meta.c_rate,
+            cell_meta.temperature,
+            battery_ID=cell_id,
+            output_dir=battery_images_path,
+            one_fig_only=False,
+        )
+        print(f"✅ Generated figures for Cell {cell_number}")
+
+    except Exception as e:
+        print(f"❌ Error generating figures for Cell {cell_number}: {str(e)}")
+
+
+def save_error_log(error_dict: Dict[str, str], config: ProcessingConfig) -> None:
+    """Save error log."""
+    if not error_dict:
+        return
+
+    error_df = pd.DataFrame(list(error_dict.items()), columns=["Cell", "Error_Message"])
+    error_log_path = os.path.join(config.output_data_path, "error_log_oxford.csv")
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process Oxford battery data."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting Oxford battery data processing...")
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    file_path = os.path.join(
+        project_root, config.base_data_path, "Oxford_Battery_Degradation_Dataset_1.mat"
+    )
+
+    print(f"📂 Processing: {file_path}")
+    print(f"Dataset: Oxford Battery Degradation Dataset (LCO - Kokam 740mAh)")
 
     # Extract voltage limits from the data
     print("\nExtracting voltage limits from data...")
     try:
-        # Extract from first cell to determine voltage limits
-        cell_vmax, cell_vmin = extract_voltage_limits_from_mat_full(
+        vmax, vmin = extract_voltage_limits_from_mat_full(
             file_path, cell_number=1, percentile=99
         )
-
-        print(f"[SUCCESS] Extracted voltage limits from data:")
-        print(f"  - cell_vmax = {cell_vmax:.4f} V")
-        print(f"  - cell_vmin = {cell_vmin:.4f} V")
+        print(f"✅ Extracted voltage limits: vmax={vmax:.4f}V, vmin={vmin:.4f}V")
     except Exception as e:
-        # Fallback to default values if extraction fails
-        cell_vmax = 4.2
-        cell_vmin = 2.9
-        print(f"[WARNING] Could not extract voltage limits: {str(e)}")
-        print(f"  Using default values: vmax={cell_vmax}V, vmin={cell_vmin}V")
+        vmax, vmin = 4.2, 2.9
+        print(f"⚠️  Using default voltage limits: vmax={vmax}V, vmin={vmin}V")
 
-    # Use default Oxford specifications
-    print("Using default Oxford specifications from readme")
+    # Process cells 1-8
+    cells_to_process = range(1, 9)
+    print(f"📊 Processing {len(cells_to_process)} cells")
 
-    # Process each cell and save individual CSV files
-    for cell_num in cells_to_process:
-        try:
-            print(f"\nProcessing Cell {cell_num}...")
-            cell_id = f"{cell_id_base}{cell_num}"
+    error_dict = {}
 
-            # Parse the mat file
-            df = parse_mat_file(
-                file_path,
-                cell_initial_capacity,
-                cell_C_rate,
-                cell_vmax,
-                cell_vmin,
-                cell_number=cell_num,
-            )
+    # Process each cell
+    for cell_number in cells_to_process:
+        cell_meta = get_cell_metadata(cell_number, vmax, vmin)
 
-            # Select only the required columns
-            required_columns = [
-                "Current(A)",
-                "Voltage(V)",
-                "Test_Time(s)",
-                "Cycle_Count",
-                "Delta_Time(s)",
-                "Delta_Ah",
-                "Ah_throughput",
-                "EFC",
-                "C_rate",
-            ]
+        # Process cell data
+        df, error_msg = process_single_cell(file_path, cell_number, cell_meta, config)
 
-            # Filter to only include columns that exist in the dataframe
-            available_columns = [col for col in required_columns if col in df.columns]
-            df_filtered = df[available_columns]
+        if error_msg:
+            error_dict[f"Cell{cell_number}"] = error_msg
+            continue
 
-            # Create filename: oxford_LCO_cell1_298K.csv
-            temperature_str = f"{int(cell_temperature)}K"
-            output_filename = f"oxford_LCO_cell{cell_num}_{temperature_str}.csv"
-            output_path = os.path.join(output_dir, output_filename)
+        if len(df) > 0:
+            # Save processed data
+            save_processed_data(df, cell_number, cell_meta, config)
 
-            # Save individual CSV file
-            df_filtered.to_csv(output_path, index=False)
-            print(
-                f"Cell {cell_num}: Saved {len(df_filtered)} data points to {output_filename}"
-            )
+            # Generate figures
+            generate_and_save_figures(df, cell_number, cell_meta, config)
 
-            # Generate figures for all cells
-            try:
-                generate_figures(
-                    df,
-                    cell_vmax,
-                    cell_vmin,
-                    cell_C_rate,
-                    cell_temperature,
-                    battery_ID=cell_id,
-                    output_dir=output_dir,
-                    one_fig_only=False,
-                )
-            except Exception as e:
-                print(
-                    f"Warning: Could not generate figures for Cell {cell_num}: {str(e)}"
-                )
+    # Save error log
+    save_error_log(error_dict, config)
 
-        except Exception as e:
-            error_dict[f"Cell{cell_num}"] = str(e)
-            print(f"Error processing Cell {cell_num}: {str(e)}")
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
 
-    # Save error log if there are errors
-    if error_dict:
-        error_df = pd.DataFrame(
-            list(error_dict.items()), columns=["Cell", "Error_Message"]
-        )
-        error_df.to_csv("oxford_error_log.csv", index=False)
-        print(f"\nErrors logged to oxford_error_log.csv")
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
 
-    print(f"\nProcessing complete! Files saved to {output_dir}/")
+    print(f"\n{'='*60}")
+    print(f"🎉 All Oxford cells processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(cells_to_process)} cells")
+    print(f"{'='*60}")
+
+
+if __name__ == "__main__":
+    main()
