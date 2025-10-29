@@ -22,7 +22,7 @@ class ProcessingConfig:
     """Configuration class for MIT data processing."""
 
     base_data_path: str = "assets/raw_data/MIT"
-    output_data_path: str = "processed_datasets/LFP"
+    output_data_path: str = "processed_datasets/LFP"  # For aggregated data
     output_images_path: str = "processed_images/LFP"
     required_columns: List[str] = None
 
@@ -52,7 +52,7 @@ class CellMetadata:
     temperature: float
 
 
-def gen_bat_df(input_path, input_file):
+def gen_bat_df(input_path, input_file, output_path):
     """Generate battery dataframe from MIT .mat files with reduced precision"""
     input_filepath = os.path.join(input_path, input_file)
     bol_cap = 1.1
@@ -151,8 +151,10 @@ def gen_bat_df(input_path, input_file):
 
                     # Export with shorter filename
                     out_name = f"{batch_name}_cell_{cell}_processed.csv"
+                    output_filepath = os.path.join(output_path, out_name)
+                    os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
                     output_df.to_csv(
-                        os.path.join(input_path, out_name),
+                        output_filepath,
                         index=False,
                         float_format="%.4f",  # Limit decimal places in output
                     )
@@ -345,14 +347,14 @@ def process_single_mat_file(
     print(f"\n📁 Processing MAT file: {mat_file}")
 
     try:
-        # Generate cell CSVs from .mat file
-        gen_bat_df(input_folder, mat_file)
+        # Generate cell CSVs from .mat file - save to same directory as .mat files
+        gen_bat_df(input_folder, mat_file, input_folder)
 
         # Extract batch name (e.g., "MIT_20170512")
         batch_date = mat_file.split("_")[0]
         batch_name = f"MIT_{batch_date.replace('-', '')}"
 
-        # Find generated CSV files for this .mat file
+        # Find generated CSV files for this .mat file (in the same directory as .mat files)
         csv_files = [
             f
             for f in os.listdir(input_folder)
@@ -371,7 +373,7 @@ def process_single_mat_file(
 
 def process_single_cell_csv(
     csv_file: str,
-    input_folder: str,
+    output_folder: str,
     meta_df: pd.DataFrame,
     config: ProcessingConfig,
 ) -> Dict[str, str]:
@@ -379,7 +381,8 @@ def process_single_cell_csv(
     error_dict = {}
 
     try:
-        cell_filepath = os.path.join(input_folder, csv_file)
+        # Read processed CSV from the same directory as .mat files
+        cell_filepath = os.path.join(config.base_data_path, csv_file)
         cell_df = pd.read_csv(cell_filepath)
 
         # Extract battery ID from filename (remove "_processed.csv")
@@ -431,6 +434,23 @@ def save_error_log(error_dict: Dict[str, str], config: ProcessingConfig) -> None
     print(f"📝 Saved error log: {error_log_path}")
 
 
+def check_existing_csv_files(config: ProcessingConfig) -> List[str]:
+    """Check if processed CSV files already exist and return list of existing files."""
+    # Check in the same directory as .mat files (base_data_path)
+    if not os.path.exists(config.base_data_path):
+        return []
+
+    # Look for all processed CSV files in the .mat files directory
+    existing_csvs = [
+        f for f in os.listdir(config.base_data_path) if f.endswith("_processed.csv")
+    ]
+
+    print(
+        f"🔍 Found {len(existing_csvs)} existing processed CSV files in {config.base_data_path}"
+    )
+    return existing_csvs
+
+
 def main(config: Optional[ProcessingConfig] = None) -> None:
     """Main function to process all MIT files with multi-threading."""
     if config is None:
@@ -452,6 +472,9 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
     config.output_data_path = os.path.join(project_root, config.output_data_path)
     config.output_images_path = os.path.join(project_root, config.output_images_path)
 
+    # Check for existing processed CSV files
+    existing_csvs = check_existing_csv_files(config)
+
     # Get all .mat files
     mat_files = [f for f in os.listdir(mit_base_path) if f.endswith(".mat")]
     print(f"📂 Found {len(mat_files)} MIT .mat files")
@@ -460,28 +483,37 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
     all_errors = {}
     all_csv_files = []
 
-    # Step 1: Process .mat files to generate CSVs (can be multithreaded)
-    print("\n" + "=" * 60)
-    print("Step 1: Converting .mat files to CSVs")
-    print("=" * 60)
+    # Step 1: Process .mat files to generate CSVs (only if needed)
+    if existing_csvs:
+        print("\n" + "=" * 60)
+        print("Step 1: Using existing processed CSV files")
+        print("=" * 60)
+        all_csv_files = existing_csvs
+        print(
+            f"✅ Skipping .mat conversion, using {len(existing_csvs)} existing CSV files"
+        )
+    else:
+        print("\n" + "=" * 60)
+        print("Step 1: Converting .mat files to CSVs")
+        print("=" * 60)
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_mat = {
-            executor.submit(
-                process_single_mat_file, mat_file, mit_base_path, meta_df, config
-            ): mat_file
-            for mat_file in mat_files
-        }
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_mat = {
+                executor.submit(
+                    process_single_mat_file, mat_file, mit_base_path, meta_df, config
+                ): mat_file
+                for mat_file in mat_files
+            }
 
-        for future in as_completed(future_to_mat):
-            mat_file = future_to_mat[future]
-            try:
-                csv_files, error_dict = future.result()
-                all_csv_files.extend(csv_files)
-                all_errors.update(error_dict)
-            except Exception as e:
-                print(f"✗ Error processing {mat_file}: {str(e)}")
-                all_errors[mat_file] = str(e)
+            for future in as_completed(future_to_mat):
+                mat_file = future_to_mat[future]
+                try:
+                    csv_files, error_dict = future.result()
+                    all_csv_files.extend(csv_files)
+                    all_errors.update(error_dict)
+                except Exception as e:
+                    print(f"✗ Error processing {mat_file}: {str(e)}")
+                    all_errors[mat_file] = str(e)
 
     # Step 2: Process generated CSV files (multithreaded)
     print(f"\n{'='*60}")
@@ -493,7 +525,11 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_csv = {
             executor.submit(
-                process_single_cell_csv, csv_file, mit_base_path, meta_df, config
+                process_single_cell_csv,
+                csv_file,
+                mit_base_path,  # Use mit_base_path since processed.csv files are now in the same directory as .mat files
+                meta_df,
+                config,
             ): csv_file
             for csv_file in all_csv_files
         }
