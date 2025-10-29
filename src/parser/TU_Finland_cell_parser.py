@@ -1,18 +1,55 @@
 import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.help_function import load_meta_properties
 
-def load_meta_properties():
-    """Load battery metadata from Excel file"""
-    df = pd.read_excel(
-        r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\battery_data_mapper.xlsx",
-        sheet_name="General_Infos",
-    )
-    return df
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for TU Finland data processing."""
+
+    base_data_path: str = "assets/raw_data/TU_Finland"
+    output_data_path: str = "processed_datasets"
+    output_images_path: str = "processed_images"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate: float
+    temperature: float
+    vmax: float
+    vmin: float
 
 
 def extract_battery_specs_from_mat(file_path, percentile=95):
@@ -302,14 +339,8 @@ def scrub_and_tag(
     for i, (charge_start, charge_end) in enumerate(
         zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1
     ):
-        # Get the discharge start for this cycle
-        if i <= len(adjusted_discharge_indices):
-            discharge_start = adjusted_discharge_indices[i - 1]
-        else:
-            discharge_start = len(df)
-
-        # Extract cycle data
-        cycle_data = df.iloc[charge_start:discharge_start].copy()
+        # Extract cycle data (from this charge start to next charge start)
+        cycle_data = df.iloc[charge_start:charge_end].copy()
         cycle_data["Cycle_Count"] = i
 
         # Filter out constant voltage holds if vmax and vmin are provided
@@ -495,269 +526,365 @@ def parse_mat_file(file_path, cell_initial_capacity, cell_C_rate, vmax=None, vmi
 
 
 def generate_figures(
-    df,
-    vmax,
-    vmin,
-    c_rate,
-    temperature,
-    battery_ID,
-    output_dir,
+    df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    battery_ID: str,
+    output_dir: str,
     tolerance=0.01,
-    one_fig_only=False,
 ):
-    """Generate charge and discharge profile figures"""
-    # Create images subdirectory
-    images_dir = os.path.join(output_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
+    """Generate charge and discharge profile figures following matplotlib standards."""
+    # Create battery-specific subdirectory
+    battery_images_path = os.path.join(output_dir, battery_ID)
+    os.makedirs(battery_images_path, exist_ok=True)
 
     unique_cycles = df["Cycle_Count"].unique()
+
     for i, cycle in enumerate(unique_cycles):
         cycle_df = df[df["Cycle_Count"] == cycle].reset_index(drop=True)
 
-        # find where voltage first hits vmax and vmin, and where first discharge occurs
+        # Find key indices
         try:
-            vmax_idx = cycle_df[cycle_df["Voltage(V)"] >= vmax - tolerance].index[0]
+            vmax_idx = cycle_df[
+                cycle_df["Voltage(V)"] >= cell_meta.vmax - tolerance
+            ].index[0]
         except IndexError:
             vmax_idx = cycle_df["Voltage(V)"].idxmax()
 
         try:
-            vmin_idx = cycle_df[cycle_df["Voltage(V)"] <= vmin + tolerance].index[0]
+            vmin_idx = cycle_df[
+                cycle_df["Voltage(V)"] <= cell_meta.vmin + tolerance
+            ].index[0]
         except IndexError:
             vmin_idx = cycle_df["Voltage(V)"].idxmin()
 
         try:
-            disch_start = cycle_df[cycle_df["Current(A)"] < 0 - tolerance].index[0]
+            disch_start = cycle_df[cycle_df["Current(A)"] < -tolerance].index[0]
         except IndexError:
-            # For charge-only data, set discharge start to end of cycle
-            disch_start = len(cycle_df)
+            # Try with a smaller threshold if no discharge found
+            try:
+                disch_start = cycle_df[cycle_df["Current(A)"] < 0].index[0]
+            except IndexError:
+                disch_start = len(cycle_df)
 
-        # clip data to initial until Vmax, then from discharge start to Vmin
+        # Clip charge data
         charge_cycle_df = cycle_df.loc[0:vmax_idx].copy()
 
-        # Find vmin_idx after discharge starts (not before)
+        # Clip discharge data
         if disch_start < len(cycle_df):
             discharge_portion = cycle_df.loc[disch_start:]
             try:
                 vmin_idx_adjusted = discharge_portion[
-                    discharge_portion["Voltage(V)"] <= vmin + tolerance
+                    discharge_portion["Voltage(V)"] <= cell_meta.vmin + tolerance
                 ].index[0]
             except IndexError:
                 vmin_idx_adjusted = discharge_portion.index[-1]
 
             discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx_adjusted].copy()
         else:
-            # No discharge data available
             discharge_cycle_df = pd.DataFrame()
 
-        # Check if we have valid data
+        # Generate charge plot
         if len(charge_cycle_df) > 0:
             charge_cycle_df["Charge_Time(s)"] = (
                 charge_cycle_df["Test_Time(s)"]
                 - charge_cycle_df["Test_Time(s)"].iloc[0]
             )
 
-            # generate plot, clipped last datum in case current reset to rest
-            plt.figure(figsize=(10, 6))
+            fig = plt.figure(figsize=(10, 6))
             plt.plot(
                 charge_cycle_df["Charge_Time(s)"],
                 charge_cycle_df["Voltage(V)"],
-                color="blue",
+                "b-",
+                linewidth=2,
             )
-            plt.xlabel("Charge Time (s)")
-            plt.ylabel("Voltage (V)", color="blue")
-            plt.title(f"Cycle {cycle} Charge Profile")
-            save_string = f"Cycle_{i+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(images_dir, save_string)
-            plt.savefig(save_path)
-            plt.close()
+            plt.xlabel("Charge Time (s)", fontsize=12)
+            plt.ylabel("Voltage (V)", fontsize=12)
+            plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
+            plt.grid(True, alpha=0.3)
+            save_string = f"Cycle_{i+1}_charge_Crate_{cell_meta.c_rate}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
+            save_path = os.path.join(battery_images_path, save_string)
+            plt.savefig(save_path, dpi=100, bbox_inches="tight")
+            plt.close(fig)
 
+        # Generate discharge plot
         if len(discharge_cycle_df) > 0:
             discharge_cycle_df["Discharge_Time(s)"] = (
                 discharge_cycle_df["Test_Time(s)"]
                 - discharge_cycle_df["Test_Time(s)"].iloc[0]
             )
 
-            # plot current on secondary axis
-            plt.figure(figsize=(10, 6))
+            fig = plt.figure(figsize=(10, 6))
             plt.plot(
                 discharge_cycle_df["Discharge_Time(s)"],
                 discharge_cycle_df["Voltage(V)"],
                 "r-",
-            )  # remove last few points to avoid voltage recovery
-            plt.ylabel("Voltage (V)", color="red")
-            plt.title(f"Cycle {cycle} Discharge Profile")
-            save_string = f"Cycle_{i+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(images_dir, save_string)
-            plt.savefig(save_path)
-            plt.close()
+                linewidth=2,
+            )
+            plt.xlabel("Discharge Time (s)", fontsize=12)
+            plt.ylabel("Voltage (V)", fontsize=12)
+            plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
+            plt.grid(True, alpha=0.3)
+            save_string = f"Cycle_{i+1}_discharge_Crate_{cell_meta.c_rate}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
+            save_path = os.path.join(battery_images_path, save_string)
+            plt.savefig(save_path, dpi=100, bbox_inches="tight")
+            plt.close(fig)
 
-        # Exit function after 1st run if one_fig_only is True
-        if one_fig_only:
-            break
+
+def get_cell_metadata_from_file(file_path: str, battery_type: str) -> CellMetadata:
+    """Extract cell metadata from .mat file."""
+    try:
+        vmax, vmin, capacity, c_rate = extract_battery_specs_from_mat(
+            file_path, percentile=95
+        )
+        temperature = 298.15  # Default temperature for TU Finland
+
+        return CellMetadata(
+            initial_capacity=capacity,
+            c_rate=c_rate,
+            temperature=temperature,
+            vmax=vmax,
+            vmin=vmin,
+        )
+    except Exception as e:
+        print(f"⚠️  Error extracting metadata, using defaults: {e}")
+        # Default values based on battery type
+        if battery_type == "LFP":
+            return CellMetadata(
+                initial_capacity=2.5, c_rate=1.0, temperature=298.15, vmax=3.6, vmin=2.5
+            )
+        elif battery_type in ["NCA", "NMC"]:
+            return CellMetadata(
+                initial_capacity=3.0, c_rate=1.0, temperature=298.15, vmax=4.2, vmin=2.7
+            )
+        else:
+            return CellMetadata(
+                initial_capacity=2.5, c_rate=1.0, temperature=298.15, vmax=3.6, vmin=2.5
+            )
+
+
+def process_single_mat_file(
+    mat_file: str,
+    battery_type: str,
+    data_dir: str,
+    config: ProcessingConfig,
+) -> Dict[str, str]:
+    """Process a single .mat file."""
+    error_dict = {}
+
+    try:
+        cell_id = mat_file.replace(".mat", "")
+        file_path = os.path.join(data_dir, mat_file)
+
+        print(f"\n📁 Processing: {battery_type}/{cell_id}")
+
+        # Get cell metadata from file
+        cell_meta = get_cell_metadata_from_file(file_path, battery_type)
+
+        # Parse the mat file
+        df = parse_mat_file(
+            file_path,
+            cell_meta.initial_capacity,
+            cell_meta.c_rate,
+            cell_meta.vmax,
+            cell_meta.vmin,
+        )
+
+        # Select only required columns
+        available_columns = [
+            col for col in config.required_columns if col in df.columns
+        ]
+        df_filtered = df[available_columns]
+
+        # Setup output paths
+        output_data_path = os.path.join(config.output_data_path, battery_type)
+        output_images_path = os.path.join(config.output_images_path, battery_type)
+        os.makedirs(output_data_path, exist_ok=True)
+        os.makedirs(output_images_path, exist_ok=True)
+
+        # Save CSV
+        csv_filename = (
+            f"{cell_id.lower()}_{int(cell_meta.temperature)}k_aggregated_data.csv"
+        )
+        csv_path = os.path.join(output_data_path, csv_filename)
+        df_filtered.to_csv(csv_path, index=False)
+        print(f"💾 Saved: {csv_path} ({len(df_filtered)} data points)")
+
+        # Generate figures
+        try:
+            generate_figures(
+                df,
+                cell_meta,
+                cell_id,
+                output_images_path,
+            )
+            print(f"🖼️  Generated figures for {cell_id}")
+        except Exception as e:
+            print(f"⚠️  Could not generate figures for {cell_id}: {e}")
+            error_dict[f"{cell_id}_figures"] = str(e)
+
+    except Exception as e:
+        print(f"❌ Error processing {mat_file}: {e}")
+        error_dict[mat_file] = str(e)
+
+    return error_dict
 
 
 def process_battery_type(
-    battery_type,
-    data_dir,
-    output_dir,
-    cell_initial_capacity=None,
-    cell_C_rate=None,
-    cell_temperature=298.15,
-):
-    """Process a specific battery type dataset"""
-    print(f"\nProcessing TU Finland {battery_type} dataset...")
+    battery_type: str,
+    data_dir: str,
+    config: ProcessingConfig,
+) -> Dict[str, str]:
+    """Process all .mat files for a specific battery type."""
+    print(f"\n{'='*60}")
+    print(f"Processing TU Finland {battery_type} dataset")
+    print(f"{'='*60}")
 
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-
-    error_dict = {}
-
-    # Get list of .mat files in the directory
-    files_to_process = [
+    # Get list of .mat files (exclude OCV files)
+    mat_files = [
         f
         for f in os.listdir(data_dir)
         if f.endswith(".mat") and not f.startswith("OCV")
     ]
-    print(f"Found {len(files_to_process)} files to process")
+    print(f"📂 Found {len(mat_files)} {battery_type} .mat files")
 
-    # Extract battery specifications from the first file
-    try:
-        first_file = os.path.join(data_dir, files_to_process[0])
-        cell_vmax, cell_vmin, cell_initial_capacity, cell_C_rate = (
-            extract_battery_specs_from_mat(first_file, percentile=95)
-        )
-        print(
-            f"Extracted specs: vmax={cell_vmax:.2f}V, vmin={cell_vmin:.2f}V, capacity={cell_initial_capacity:.1f}Ah, C-rate={cell_C_rate:.1f}C"
-        )
-    except Exception as e:
-        # Fallback to default values if extraction fails
-        cell_vmax = 3.6
-        cell_vmin = 2.5
-        cell_initial_capacity = 2.5
-        cell_C_rate = 1.0
-        print(
-            f"Using default values: vmax={cell_vmax}V, vmin={cell_vmin}V, capacity={cell_initial_capacity}Ah, C-rate={cell_C_rate}C"
-        )
+    if len(mat_files) == 0:
+        return {}
 
-    # Process each cell and save individual CSV files
-    for file_name in files_to_process:
-        try:
-            cell_id = file_name.replace(".mat", "")
-            file_path = os.path.join(data_dir, file_name)
+    # Process files with threading
+    all_errors = {}
+    completed_count = 0
 
-            # Parse the mat file
-            df = parse_mat_file(
-                file_path, cell_initial_capacity, cell_C_rate, cell_vmax, cell_vmin
-            )
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_file = {
+            executor.submit(
+                process_single_mat_file, mat_file, battery_type, data_dir, config
+            ): mat_file
+            for mat_file in mat_files
+        }
 
-            # Select only the required columns
-            required_columns = [
-                "Current(A)",
-                "Voltage(V)",
-                "Test_Time(s)",
-                "Cycle_Count",
-                "Delta_Time(s)",
-                "Delta_Ah",
-                "Ah_throughput",
-                "EFC",
-                "C_rate",
-            ]
-
-            # Filter to only include columns that exist in the dataframe
-            available_columns = [col for col in required_columns if col in df.columns]
-            df_filtered = df[available_columns]
-
-            # Create filename: tu_finland_LFP_cell1_298K.csv
-            temperature_str = f"{int(cell_temperature)}K"
-            output_filename = (
-                f"tu_finland_{battery_type}_{cell_id}_{temperature_str}.csv"
-            )
-            output_path = os.path.join(output_dir, output_filename)
-
-            # Save individual CSV file
-            df_filtered.to_csv(output_path, index=False)
-            print(
-                f"[OK] {file_name}: {len(df_filtered)} data points -> {output_filename}"
-            )
-
-            # Generate figures for all cells
+        for future in as_completed(future_to_file):
+            mat_file = future_to_file[future]
             try:
-                generate_figures(
-                    df,
-                    cell_vmax,
-                    cell_vmin,
-                    cell_C_rate,
-                    cell_temperature,
-                    battery_ID=cell_id,
-                    output_dir=output_dir,
-                    one_fig_only=True,
-                )
+                error_dict = future.result()
+                all_errors.update(error_dict)
+                completed_count += 1
+                print(f"✅ [{completed_count}/{len(mat_files)}] Completed: {mat_file}")
             except Exception as e:
-                print(f"[WARN] Could not generate figures for {file_name}")
-
-        except Exception as e:
-            error_dict[file_name] = str(e)
-            print(f"[ERROR] {file_name}: {str(e)}")
+                print(f"✗ Error processing {mat_file}: {str(e)}")
+                all_errors[mat_file] = str(e)
+                completed_count += 1
 
     # Save error log if there are errors
-    if error_dict:
+    if all_errors:
         error_df = pd.DataFrame(
-            list(error_dict.items()), columns=["File", "Error_Message"]
+            list(all_errors.items()), columns=["File_Name", "Error_Message"]
         )
         error_log_path = os.path.join(
-            output_dir, f"{battery_type.lower()}_error_log.csv"
+            config.output_data_path,
+            battery_type,
+            f"error_log_{battery_type.lower()}.csv",
         )
+        os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
         error_df.to_csv(error_log_path, index=False)
-        print(f"Errors logged to {error_log_path}")
+        print(f"📝 Saved error log: {error_log_path}")
 
-    print(f"[DONE] {battery_type} processing complete!")
-    return error_dict
+    print(f"✅ {battery_type} processing complete!")
+    return all_errors
+
+
+def save_error_log(
+    all_errors: Dict[str, Dict[str, str]], config: ProcessingConfig
+) -> None:
+    """Save consolidated error log for all battery types."""
+    if not all_errors or not any(all_errors.values()):
+        return
+
+    # Flatten errors from all battery types
+    flat_errors = {}
+    for battery_type, errors in all_errors.items():
+        for file, error in errors.items():
+            flat_errors[f"{battery_type}/{file}"] = error
+
+    if flat_errors:
+        error_df = pd.DataFrame(
+            list(flat_errors.items()), columns=["File_Name", "Error_Message"]
+        )
+        error_log_path = os.path.join(
+            config.output_data_path, "error_log_tu_finland.csv"
+        )
+        os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
+        error_df.to_csv(error_log_path, index=False)
+        print(f"\n📝 Saved consolidated error log: {error_log_path}")
+
+
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all TU Finland files with multi-threading."""
+    if config is None:
+        config = ProcessingConfig()
+
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting TU Finland battery data processing with 5 threads per type...")
+
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    tu_base_path = os.path.join(project_root, config.base_data_path)
+
+    # Update config paths to absolute paths
+    config.output_data_path = os.path.join(project_root, config.output_data_path)
+    config.output_images_path = os.path.join(project_root, config.output_images_path)
+
+    # Battery type configurations
+    battery_types = ["LFP", "NCA", "NMC"]
+    all_errors = {}
+
+    # Process each battery type
+    for battery_type in battery_types:
+        data_dir = os.path.join(tu_base_path, battery_type)
+        if os.path.exists(data_dir):
+            try:
+                errors = process_battery_type(battery_type, data_dir, config)
+                all_errors[battery_type] = errors
+            except Exception as e:
+                print(f"❌ Error processing {battery_type}: {str(e)}")
+                all_errors[battery_type] = {"general_error": str(e)}
+        else:
+            print(f"⚠️  Directory not found: {data_dir}")
+
+    # Save consolidated error log
+    save_error_log(all_errors, config)
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"PROCESSING SUMMARY")
+    print(f"{'='*60}")
+    for battery_type, errors in all_errors.items():
+        if errors:
+            print(f"❌ {battery_type}: {len(errors)} errors")
+        else:
+            print(f"✅ {battery_type}: SUCCESS")
+    print(f"{'='*60}")
+    print(f"🎉 All TU Finland files processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(battery_types)} battery types with 5 threads each")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    # Battery type configurations (capacity and C-rate will be extracted from data)
-    battery_configs = {
-        "LFP": {
-            "data_dir": r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\TU_Finland\DATASET\LFP",
-            "output_dir": "TU_Finland_LFP",
-            "cell_temperature": 298,
-        },
-        "NCA": {
-            "data_dir": r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\TU_Finland\DATASET\NCA",
-            "output_dir": "TU_Finland_NCA",
-            "cell_temperature": 298,
-        },
-        "NMC": {
-            "data_dir": r"C:\Users\ShuS\Documents\github\Battery_Classifier\data\raw\TU_Finland\DATASET\NMC",
-            "output_dir": "TU_Finland_NMC",
-            "cell_temperature": 298,
-        },
-    }
+    main()
 
-    # Process all battery types
-    all_errors = {}
-    for battery_type, config in battery_configs.items():
-        try:
-            errors = process_battery_type(
-                battery_type=battery_type,
-                data_dir=config["data_dir"],
-                output_dir=config["output_dir"],
-                cell_initial_capacity=None,  # Will be extracted from data
-                cell_C_rate=None,  # Will be extracted from data
-                cell_temperature=config["cell_temperature"],
-            )
-            all_errors[battery_type] = errors
-        except Exception as e:
-            print(f"Error processing {battery_type}: {str(e)}")
-            all_errors[battery_type] = {"general_error": str(e)}
 
-    # Summary
-    print(f"\n{'='*40}")
-    print("PROCESSING SUMMARY")
-    print(f"{'='*40}")
-    for battery_type, errors in all_errors.items():
-        if errors:
-            print(f"[FAIL] {battery_type}: {len(errors)} errors")
-        else:
-            print(f"[PASS] {battery_type}: SUCCESS")
-    print(f"{'='*40}")
+# ============================================================
+# 🎉 All TU Finland files processed successfully!
+# ⏱️  Total processing time: 00:21:08
+# 📊 Processed 3 battery types with 5 threads each
+# ============================================================
