@@ -1,11 +1,56 @@
 import json
 import os
-import traceback
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
-import cx_cell_parser as cx
+import matplotlib
+
+matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.help_function import load_meta_properties
+
+
+@dataclass
+class ProcessingConfig:
+    """Configuration class for ISU data processing."""
+
+    base_data_path: str = "assets/raw_data/ISU"
+    output_data_path: str = "processed_datasets/NMC"
+    output_images_path: str = "processed_images/NMC"
+    required_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.required_columns is None:
+            self.required_columns = [
+                "Current(A)",
+                "Voltage(V)",
+                "Test_Time(s)",
+                "Cycle_Count",
+                "Delta_Time(s)",
+                "Delta_Ah",
+                "Ah_throughput",
+                "EFC",
+                "C_rate",
+                "direction",
+            ]
+
+
+@dataclass
+class CellMetadata:
+    """Cell metadata container."""
+
+    initial_capacity: float
+    c_rate_charge: float
+    c_rate_discharge: float
+    temperature: float
+    dod: float
 
 
 def load_cycling_json(file, path):
@@ -34,8 +79,6 @@ def extract_cycle_data(cycling_dict):
     charge_cycles = []
     discharge_cycles = []
     num_cycles = len(cycling_dict["QV_charge"]["t"])
-    print(cycling_dict["QV_charge"].keys())
-    print(cycling_dict["QV_discharge"].keys())
 
     # Each entry in QV_charge and QV_discharge corresponds to one cycle
     for i in range(num_cycles):
@@ -49,7 +92,9 @@ def extract_cycle_data(cycling_dict):
             df_c = pd.DataFrame(
                 {
                     "Cycle_Count": i + 1,
-                    "Time": pd.to_datetime(t_charge),
+                    "Time": pd.to_datetime(
+                        t_charge, format="%Y-%m-%d %H:%M:%S", errors="coerce"
+                    ),
                     "Current(A)": I_charge,
                     "Voltage(V)": V_charge,
                     "Capacity": Q_charge,
@@ -83,7 +128,9 @@ def extract_cycle_data(cycling_dict):
             df_d = pd.DataFrame(
                 {
                     "Cycle_Count": i + 1,
-                    "Time": pd.to_datetime(t_discharge),
+                    "Time": pd.to_datetime(
+                        t_discharge, format="%Y-%m-%d %H:%M:%S", errors="coerce"
+                    ),
                     "Current(A)": I_discharge,
                     "Voltage(V)": V_discharge,
                     "Capacity": Q_discharge,
@@ -130,11 +177,9 @@ def clip_data(input_df, direction):
 
 def monotonicity_check(input_df, direction):
     if len(input_df) > 5:
-
         if direction == "charge":
             valid_profile = input_df["Voltage(V)"].is_monotonic_increasing
             valid_profile = True
-
         elif direction == "discharge":
             valid_profile = input_df["Voltage(V)"].is_monotonic_decreasing
             valid_profile = True
@@ -145,68 +190,81 @@ def monotonicity_check(input_df, direction):
 
 
 def generate_figures(
-    output_image_folder,
-    charge_cycle_df,
-    discharge_cycle_df,
-    C_rate_charge,
-    C_rate_discharge,
-    temperature,
-    battery_ID,
-    cycle,
+    charge_cycle_df: pd.DataFrame,
+    discharge_cycle_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    battery_ID: str,
+    cycle: int,
+    output_dir: str,
 ):
+    """Generate charge and discharge figures following matplotlib standards."""
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Set plot directory
-    if not os.path.exists(output_image_folder):
-        os.makedirs(output_image_folder)
-
-    # generate plot, clipped last datum in case current reset to rest
-    fig = plt.figure(figsize=(10, 6))
+    # Prepare data
     charge_cycle_df = charge_cycle_df.copy()
     discharge_cycle_df = discharge_cycle_df.copy()
 
     charge_cycle_df["step_time(s)"] = (
         charge_cycle_df["Test_Time(s)"] - charge_cycle_df["Test_Time(s)"].iloc[0]
     )
-    plt.plot(
-        charge_cycle_df["step_time(s)"], charge_cycle_df["Voltage(V)"], color="blue"
-    )
-    plt.xlabel("Charge Time (s)")
-    plt.ylabel("Voltage (V)", color="blue")
-    plt.title(f"Cycle {cycle} Charge Profile")
-    save_string = f"{output_image_folder}\Cycle_{cycle}_charge_Crate_{C_rate_charge}_tempK_{temperature}_batteryID_{battery_ID}.png"
-    fig.savefig(save_string)
-    plt.close(fig)
-    print(f"successfully exported {save_string} to {output_image_folder}")
-
-    # plot current on secondary axis
-    fig = plt.figure(figsize=(10, 6))
     discharge_cycle_df["step_time(s)"] = (
         discharge_cycle_df["Test_Time(s)"] - discharge_cycle_df["Test_Time(s)"].iloc[0]
     )
+
+    # Generate charge plot
+    fig = plt.figure(figsize=(10, 6))
     plt.plot(
-        discharge_cycle_df["step_time(s)"], discharge_cycle_df["Voltage(V)"], "r-"
-    )  # remove last few points to avoid voltage recovery
-    plt.ylabel("Voltage (V)", color="red")
-    plt.title(f"Cycle {cycle} Discharge Profile")
-    save_string = f"{output_image_folder}\Cycle_{cycle}_discharge_Crate_{C_rate_discharge}_tempK_{temperature}_batteryID_{battery_ID}.png"
-    fig.savefig(save_string)
+        charge_cycle_df["step_time(s)"],
+        charge_cycle_df["Voltage(V)"],
+        "b-",
+        linewidth=2,
+    )
+    plt.xlabel("Charge Time (s)", fontsize=12)
+    plt.ylabel("Voltage (V)", fontsize=12)
+    plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    save_string = f"Cycle_{cycle}_charge_Crate_{cell_meta.c_rate_charge}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
+    save_path = os.path.join(output_dir, save_string)
+    fig.savefig(save_path, dpi=100, bbox_inches="tight")
     plt.close(fig)
-    print(f"successfully exported {save_string} to {output_image_folder}")
+
+    # Generate discharge plot
+    fig = plt.figure(figsize=(10, 6))
+    plt.plot(
+        discharge_cycle_df["step_time(s)"],
+        discharge_cycle_df["Voltage(V)"],
+        "r-",
+        linewidth=2,
+    )
+    plt.xlabel("Discharge Time (s)", fontsize=12)
+    plt.ylabel("Voltage (V)", fontsize=12)
+    plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    save_string = f"Cycle_{cycle}_discharge_Crate_{cell_meta.c_rate_discharge}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
+    save_path = os.path.join(output_dir, save_string)
+    fig.savefig(save_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
 
 
 def scrub_cycles(
-    input_df, cell_C_rate_charge, cell_C_rate_discharge, cell_id, cell_temperature
+    input_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    cell_id: str,
+    output_images_path: str,
 ):
+    """Process cycles and generate figures."""
     unique_cycles = input_df["Cycle_Count"].unique()
     output_df = pd.DataFrame()
+
     for cycle in unique_cycles:
         include_data = True
         cycle_df = input_df[input_df["Cycle_Count"] == cycle]
         df_charge = cycle_df[cycle_df["direction"] == "charge"]
         df_discharge = cycle_df[cycle_df["direction"] == "discharge"]
 
-        approx_time_charge = 3600 * 0.9 / cell_C_rate_charge / 2
-        approx_time_discharge = 3600 * 0.9 / cell_C_rate_discharge / 2
+        approx_time_charge = 3600 * 0.9 / cell_meta.c_rate_charge / 2
+        approx_time_discharge = 3600 * 0.9 / cell_meta.c_rate_discharge / 2
+
         if (
             df_charge["Test_Time(s)"].max() - df_charge["Test_Time(s)"].min()
             < approx_time_charge
@@ -220,25 +278,28 @@ def scrub_cycles(
 
         if include_data:
             try:
-                # clip data to avoid rest periods and constant-voltage conditions
+                # Clip data to avoid rest periods and constant-voltage conditions
                 charge_clip_df = clip_data(df_charge, direction="charge")
                 discharge_clip_df = clip_data(df_discharge, direction="discharge")
 
-                # now generate plot data
+                # Create battery-specific subdirectory
+                battery_images_path = os.path.join(output_images_path, cell_id)
+
+                # Generate figures
                 generate_figures(
-                    output_image_folder,
                     df_charge,
                     df_discharge,
-                    cell_C_rate_charge,
-                    cell_C_rate_discharge,
-                    cell_temperature,
+                    cell_meta,
                     cell_id,
                     cycle,
+                    battery_images_path,
                 )
+
                 output_df = pd.concat(
                     [output_df, charge_clip_df, discharge_clip_df], ignore_index=True
                 )
             except Exception as e:
+                print(f"❌ Error processing cycle {cycle}: {e}")
                 continue
 
     output_df = output_df.sort_values(
@@ -247,140 +308,185 @@ def scrub_cycles(
     return output_df
 
 
-def isu_parser(input_data_folder, output_folder_paths):
-    output_data_folder, output_image_folder = output_folder_paths
-    meta_df = cx.load_meta_properties()
-    files = os.listdir(input_data_folder)
-    for counter, file in enumerate(files):
-        out_df = pd.DataFrame()
-        print("beginning file: ", file)
-        print(np.round(counter / len(files) * 100, 2), "% Complete")
-        error_log_df = pd.DataFrame()
-        apple = "yes"
-        if apple == "yes":
-            # try:
-            # connect to cell infos:
-            cell_id = file.split(".")[0]
-            cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
+def get_cell_metadata(meta_df: pd.DataFrame, cell_id: str) -> Optional[CellMetadata]:
+    """Get cell metadata for a given battery ID."""
+    cell_df = meta_df[meta_df["Battery_ID"].str.lower() == str.lower(cell_id)]
 
-            # Extract Cycles, but only for datasets where they comprise >90% DOD profile
-            if float(cell_df["DoD"]) > 0.9:
-                cycling_dict = load_cycling_json(file, input_data_folder)
-                df_charge, df_discharge = extract_cycle_data(cycling_dict)
-                df_charge["direction"] = "charge"
-                df_discharge["direction"] = "discharge"
+    if len(cell_df) == 0:
+        print(f"No metadata found for battery ID: {cell_id}")
+        return None
 
-                # Split between charge and discharge
-                valid_charge = monotonicity_check(df_charge, direction="charge")
-                valid_discharge = monotonicity_check(
-                    df_discharge, direction="discharge"
+    return CellMetadata(
+        initial_capacity=cell_df["Initial_Capacity_Ah"].values[0],
+        c_rate_charge=cell_df["C_rate_Charge"].values[0],
+        c_rate_discharge=cell_df["C_rate_Discharge"].values[0],
+        temperature=cell_df["Temperature (K)"].values[0],
+        dod=cell_df["DoD"].values[0],
+    )
+
+
+def process_single_file(
+    file: str,
+    input_data_folder: str,
+    meta_df: pd.DataFrame,
+    config: ProcessingConfig,
+) -> Dict[str, str]:
+    """Process a single ISU JSON file."""
+    error_dict = {}
+    cell_id = file.split(".")[0]
+
+    print(f"\n📁 Processing file: {file}")
+
+    try:
+        # Get cell metadata
+        cell_meta = get_cell_metadata(meta_df, cell_id)
+        if cell_meta is None:
+            return error_dict
+
+        # Extract Cycles, but only for datasets where they comprise >90% DOD profile
+        if cell_meta.dod > 0.9:
+            cycling_dict = load_cycling_json(file, input_data_folder)
+            df_charge, df_discharge = extract_cycle_data(cycling_dict)
+            df_charge["direction"] = "charge"
+            df_discharge["direction"] = "discharge"
+
+            # Split between charge and discharge
+            valid_charge = monotonicity_check(df_charge, direction="charge")
+            valid_discharge = monotonicity_check(df_discharge, direction="discharge")
+
+            if valid_charge and valid_discharge:
+                # Combine and sort
+                combined = pd.concat([df_charge, df_discharge])
+                combined = combined.sort_values(
+                    by=["Cycle_Count", "direction", "Time(s)"],
+                    ascending=[True, True, True],
+                ).reset_index(drop=True)
+
+                combined["Test_Time(s)"] = (
+                    combined["Time"] - combined["Time"].iloc[0]
+                ).dt.total_seconds()
+                combined["Delta_Time(s)"] = combined["Test_Time(s)"].diff().fillna(0)
+                combined["Delta_Ah"] = combined["Capacity"].diff().fillna(0)
+                combined["Ah_throughput"] = combined["Delta_Ah"].cumsum()
+                combined["EFC"] = combined["Ah_throughput"] / cell_meta.initial_capacity
+                combined["C_rate"] = combined["Current(A)"] / cell_meta.initial_capacity
+
+                # Select required columns
+                combined = combined[config.required_columns]
+
+                # Process cycles and generate figures
+                agg_df = scrub_cycles(
+                    combined, cell_meta, cell_id, config.output_images_path
                 )
-                print(valid_charge, valid_discharge)
 
-                # Load meta_data properties
-                if valid_charge and valid_discharge:
-                    cell_initial_capacity = cell_df["Initial_Capacity_Ah"].values[0]
-                    cell_C_rate_charge = cell_df["C_rate_Charge"].values[0]
-                    cell_C_rate_discharge = cell_df["C_rate_Discharge"].values[0]
-                    cell_temperature = cell_df["Temperature (K)"].values[0]
+                # Save aggregated data
+                if len(agg_df) > 0:
+                    csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
+                    csv_path = os.path.join(config.output_data_path, csv_filename)
+                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                    agg_df.to_csv(csv_path, index=False)
+                    print(f"💾 Saved CSV file: {csv_path}")
+            else:
+                print(f"⚠️  Skipping {cell_id} - invalid charge/discharge profiles")
+        else:
+            print(f"⚠️  Skipping {cell_id} - DoD < 90% ({cell_meta.dod:.1%})")
 
-                    # iterate through to create the plots and get the aggregated data:
-                    # Generate Plot Data for Training:
-                    print("--------------")
-                    print(df_charge.columns)
-                    combined = pd.concat([df_charge, df_discharge])
-                    combined = combined.sort_values(
-                        by=["Cycle_Count", "direction", "Time(s)"],
-                        ascending=[True, True, True],
-                    ).reset_index(drop=True)
+    except Exception as e:
+        print(f"❌ Error processing {file}: {e}")
+        error_dict[file] = str(e)
 
-                    combined["Test_Time(s)"] = (
-                        combined["Time"] - combined["Time"].iloc[0]
-                    ).dt.total_seconds()
-                    combined["Delta_Time(s)"] = (
-                        combined["Test_Time(s)"].diff().fillna(0)
-                    )
-                    combined["Delta_Ah"] = combined["Capacity"].diff().fillna(0)
-                    combined["Ah_throughput"] = combined["Delta_Ah"].cumsum()
-                    combined["EFC"] = combined["Ah_throughput"] / cell_initial_capacity
-                    combined["C_rate"] = combined["Current(A)"] / cell_initial_capacity
+    return error_dict
 
-                    print("----------------")
-                    print("Sorted successfully")
-                    print(combined.head())
 
-                    # Add data to the training timeseries datafiles:
-                    print(
-                        "these are the columns for the combined_df: ", combined.columns
-                    )
-                    combined = combined[
-                        [
-                            "Current(A)",
-                            "Voltage(V)",
-                            "Test_Time(s)",
-                            "Cycle_Count",
-                            "Delta_Time(s)",
-                            "Delta_Ah",
-                            "Ah_throughput",
-                            "EFC",
-                            "C_rate",
-                            "direction",
-                        ]
-                    ]
+def save_error_log(error_dict: Dict[str, str], config: ProcessingConfig) -> None:
+    """Save error log for all batteries."""
+    if not error_dict:
+        return
 
-                    print("------------------")
-                    print("This is combined")
-                    print(combined.head())
+    error_df = pd.DataFrame(
+        list(error_dict.items()), columns=["File_Name", "Error_Message"]
+    )
+    error_log_path = os.path.join(config.output_data_path, "error_log_isu.csv")
+    os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
+    error_df.to_csv(error_log_path, index=False)
+    print(f"📝 Saved error log: {error_log_path}")
 
-                    # next need to downsample the cycles to just those that cover >0.9 DoD
-                    agg_df = scrub_cycles(
-                        combined,
-                        cell_C_rate_charge,
-                        cell_C_rate_discharge,
-                        cell_id,
-                        cell_temperature,
-                    )
 
-                    # Export aggregated datafile
-                    if not os.path.exists(output_data_folder):
-                        os.makedirs(output_data_folder)
-                    output_file_name = f"{cell_id}_aggregated_data.csv"
-                    agg_df.to_csv(
-                        os.path.join(output_data_folder, output_file_name), index=False
-                    )
+def main(config: Optional[ProcessingConfig] = None) -> None:
+    """Main function to process all ISU files with multi-threading."""
+    if config is None:
+        config = ProcessingConfig()
 
-                # except Exception as e:
-                #     tb_str = traceback.format_exc()
-                #     error_entry = {
-                #         "file": file,
-                #         "error_type": type(e).__name__,
-                #         "error_message": str(e),
-                #         "traceback": tb_str,
-                #         "timestamp": pd.Timestamp.now()
-                #     }
+    # Start timing
+    start_time = time.time()
+    print("🚀 Starting ISU battery data processing with 10 threads...")
 
-                #     # Append to the error DataFrame
-                #     error_log_df = pd.concat([error_log_df, pd.DataFrame([error_entry])], ignore_index=True)
+    # Load metadata
+    meta_df = load_meta_properties()
 
-                #     # Save after each failure so nothing is lost if the script crashes
-                #     error_log_df.to_csv(error_log_path, index=False)
+    # Setup paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, "..", "..")
+    isu_base_path = os.path.join(project_root, config.base_data_path)
 
-                #     print(f"Error processing {file}: {e}")
+    # Update config paths to absolute paths
+    config.output_data_path = os.path.join(project_root, config.output_data_path)
+    config.output_images_path = os.path.join(project_root, config.output_images_path)
+
+    # Get all JSON files
+    files = [f for f in os.listdir(isu_base_path) if f.endswith(".json")]
+    print(f"📂 Found {len(files)} ISU JSON files")
+
+    # Collect all errors
+    all_errors = {}
+    completed_count = 0
+
+    # Process files with 10 threads
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Submit all file processing tasks
+        future_to_file = {
+            executor.submit(
+                process_single_file, file, isu_base_path, meta_df, config
+            ): file
+            for file in files
+        }
+
+        # Wait for all files to complete
+        for future in as_completed(future_to_file):
+            file = future_to_file[future]
+            try:
+                error_dict = future.result()
+                all_errors.update(error_dict)
+                completed_count += 1
+                print(f"✅ [{completed_count}/{len(files)}] Completed: {file}")
+            except Exception as e:
+                print(f"✗ Error processing file {file}: {str(e)}")
+                all_errors[file] = str(e)
+                completed_count += 1
+
+    # Save error log
+    save_error_log(all_errors, config)
+
+    # Calculate and display total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Format time display
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+
+    print(f"\n{'='*60}")
+    print(f"🎉 All ISU files processed successfully!")
+    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+    print(f"📊 Processed {len(files)} files with 10 threads")
+    print(f"⚡ Average time per file: {total_time/len(files):.2f} seconds")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    # Load battery mapper data & charging datafiles:
-    output_image_folder = r"processed_images\NMC"
-    output_data_folder = r"processed_datasets\NMC"
-    input_data_folder = (
-        r"C:\Users\MJone\Downloads\ISU_Data\Cycling_json\Cycling_json\all"
-    )
-    output_folder_paths = (output_data_folder, output_image_folder)
-
-    # Error handler setup
-    error_log_path = "error_log.csv"
-    error_log_df = pd.DataFrame(
-        columns=["file", "error_type", "error_message", "traceback", "timestamp"]
-    )
-
-    isu_parser(input_data_folder, output_folder_paths)
+    main()
+# 🎉 All ISU files processed successfully!
+# ⏱️  Total processing time: 02:30:44
+# 📊 Processed 251 files with 10 threads
+# ⚡ Average time per file: 36.04 seconds
