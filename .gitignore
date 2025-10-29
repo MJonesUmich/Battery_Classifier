@@ -6,7 +6,14 @@
 # *.mat
 # *.zip 
 # *.m
-assets/raw_data/*
+*.7z
+assets/raw_data/**/*.csv
+assets/raw_data/**/*.mat
+assets/raw_data/**/*.xlsx
+assets/raw_data/**/*.txt
+assets/raw_data/**/*.json
+assets/raw_data/**/*.xls
+assets/raw_data/**/*.m
 
 processed_images/*.csv
 
