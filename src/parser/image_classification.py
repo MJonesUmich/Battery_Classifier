@@ -49,6 +49,23 @@ class BatteryDataset(Dataset):
             for img_name in png_files:
                 self.images.append(os.path.join(chemistry_path, img_name))
                 self.labels.append(self.class_to_idx[chemistry])
+        
+        # Add more detailed printing
+        print(f"\nLoading data from {os.path.basename(root_dir)}:")
+        for chemistry in self.classes:
+            chemistry_path = os.path.join(root_dir, chemistry)
+            png_files = [f for f in os.listdir(chemistry_path) if f.endswith('.png')]
+            
+            # Randomly sample if we have more images than max_samples_per_class
+            if len(png_files) > max_samples_per_class:
+                png_files = np.random.choice(png_files, max_samples_per_class, replace=False)
+            
+            num_selected = len(png_files)
+            print(f"  {chemistry}: {num_selected} images selected")
+            
+            for img_name in png_files:
+                self.images.append(os.path.join(chemistry_path, img_name))
+                self.labels.append(self.class_to_idx[chemistry])
 
     def __len__(self):
         return len(self.images)
@@ -211,7 +228,7 @@ def evaluate_model(model, test_loader, device='cuda'):
     
     return all_preds, all_labels
 
-def main(max_train_samples_per_chemistry = 50):
+def main(max_train_samples_per_chemistry = 20):
     # Set paths
     data_dir = r'C:\Users\MJone\Documents\SIADS699\processed_images\model_prep'
     train_dir = os.path.join(data_dir, 'train')
@@ -241,10 +258,11 @@ def main(max_train_samples_per_chemistry = 50):
     print(f"Validation: {len(val_dataset)} images")
     print(f"Testing: {len(test_dataset)} images")
     
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    # Create data loaders with appropriate batch size for small dataset
+    batch_size = 5  # smaller batch size since we only have 10 images per class
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Load pre-trained ResNet model
     model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
@@ -262,11 +280,17 @@ def main(max_train_samples_per_chemistry = 50):
     print(f"Model will be saved to: {save_dir}")
     
     # Train the model with save directory
-    train_losses, val_losses = train_model(
+    model_metrics =  train_model(
         model, train_loader, val_loader, criterion, optimizer,
         save_dir=save_dir, num_epochs=10, device=device
     )
+
+    train_losses = model_metrics['train_losses']
+    val_losses = model_metrics['val_losses']
     
+    print('\nFinal Training Loss: {:.4f}'.format(train_losses[-1]))
+    print('Final Validation Loss: {:.4f}'.format(val_losses[-1]))
+
     # Load best model for testing (update path)
     checkpoint = torch.load(os.path.join(save_dir, 'best_model.pth'))
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -293,4 +317,4 @@ def main(max_train_samples_per_chemistry = 50):
     plt.close()
 
 if __name__ == "__main__":
-    main(max_train_samples_per_chemistry = 10)
+    main(max_train_samples_per_chemistry = 50)
