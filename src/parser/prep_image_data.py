@@ -1,6 +1,7 @@
 import os 
-import random
-import shutil
+import random 
+import shutil 
+import re
 
 
 def get_folders(parent_path, exclude_folders):
@@ -32,82 +33,89 @@ def get_folders(parent_path, exclude_folders):
     return chemistry_folders, lowest_count
 
 
-def transfer_files(folder_path, image_dict):
+def delete_existing_images(input_folder_path): 
+    if os.path.exists(input_folder_path):
+        shutil.rmtree(input_folder_path)
+        print(f"Deleted existing folder: {input_folder_path}")
+
+
+def get_unique_cell_ids(input_folderpath):
+    unique_files = os.listdir(input_folderpath)
+    unique_cell_ids = set()
+    for file in unique_files:
+        match = re.search(r'batteryID_(.+)\.png', file)
+        if match:
+            battery_id = match.group(1)
+            unique_cell_ids.add(battery_id)             
+    return unique_cell_ids
+
+
+def get_train_val_test(chemistry_folders, parent_path, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
+    train_val_test_total_dict = {}
+
+    for chemistry in chemistry_folders:
+        if os.path.exists(os.path.join(parent_path, chemistry)) is True:
+            chemistry_path = os.path.join(parent_path, chemistry)
+            unique_cell_ids = list(get_unique_cell_ids(chemistry_path))
+            random.shuffle(unique_cell_ids)
+            total_ids = len(unique_cell_ids)
+            train_end = int(total_ids * train_ratio)
+            val_end = train_end + int(total_ids * val_ratio)
+            
+            train_ids = unique_cell_ids[:train_end]
+            val_ids = unique_cell_ids[train_end:val_end]
+            test_ids = unique_cell_ids[val_end:]
+
+            chem_path_files = os.listdir(chemistry_path)
+            train_files = [file for file in chem_path_files for train_id in train_ids if train_id in file]
+            val_files = [file for file in chem_path_files for val_id in val_ids if val_id in file]
+            test_files = [file for file in chem_path_files for test_id in test_ids if test_id in file]
+            
+            train_val_test_total_dict[chemistry] = {
+                'train': train_files,
+                'val': val_files,
+                'test': test_files
+            }
+
+    return train_val_test_total_dict
+
+
+def transfer_files(train_val_test_total_dict, parent_path, store_path):
     """
     Transfer files to chemistry-specific subfolders within train/val/test directories.
     Structure: model_prep/[train|val|test]/[chemistry]/image.png
     """
-    for split_type, image_paths in image_dict.items():
-        # Count successful transfers for reporting
-        transfer_count = 0
-        
-        for img_path in image_paths:
-            try:
-                # Get chemistry type from parent folder name
-                chemistry = os.path.basename(os.path.dirname(img_path))
-                
-                # Create full destination path: split_type/chemistry/
-                chem_dest = os.path.join(folder_path, split_type, chemistry)
-                os.makedirs(chem_dest, exist_ok=True)
-                
-                # Copy to chemistry-specific subfolder
-                dest_path = os.path.join(chem_dest, os.path.basename(img_path))
-                shutil.copy2(img_path, dest_path)
-                transfer_count += 1
-                
-            except Exception as e:
-                print(f"Error copying {img_path}: {str(e)}")
-                continue
-        
-        print(f"Transferred {transfer_count} images to {split_type}/{chemistry}")
+    for chemistry, train_val_test_dict in train_val_test_total_dict.items():
+        transfer_counter = {'train': 0, 'val': 0, 'test': 0}
+        for train_val_test_selection, file_list in train_val_test_dict.items():
+            for file in file_list:
+                specific_file_name = os.path.basename(file)
+                src_path = os.path.join(parent_path, chemistry, file)
+                base_chem = os.path.basename(chemistry)
+                dest_dir = os.path.join(store_path, train_val_test_selection, base_chem)
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_filepath = os.path.join(dest_dir, specific_file_name)
+                shutil.copy2(src_path, dest_filepath)
+                transfer_counter[train_val_test_selection] += 1
+        for split_type, transfer_count in transfer_counter.items():
+            print(f"Transferred {transfer_count} images to {split_type}/{chemistry}")
 
 
-def sample_data(chemistry_folders, lowest_count, store_path, seed=42):
-    """Sample and distribute images maintaining chemistry balance."""
-    random.seed(seed)
-    print('--------- Sampling files ---------')
+def main(parent_path, exclude_folders): 
+    chemistry_folders, lowest_count = get_folders(parent_path, exclude_folders)
+    del_path = os.path.join(parent_path, 'model_prep')
+    print(f'Removing any prior training images from {del_path}.....')
+    delete_existing_images(del_path)
 
-    for folder in chemistry_folders:
-        chemistry = os.path.basename(folder)
-        print(f'Processing {chemistry}...')
-        
-        # Get only PNG files from immediate directory
-        all_images = [f for f in os.listdir(folder) 
-                     if f.endswith('.png') 
-                     and os.path.isfile(os.path.join(folder, f))]
-        all_image_paths = [os.path.join(folder, image) for image in all_images]
-        
-        if len(all_image_paths) > lowest_count:
-            all_image_paths = random.sample(all_image_paths, lowest_count)
+    print("Separating files into train, val, and test randomly by unique cell id.....")
+    train_val_test_total_dict = get_train_val_test(chemistry_folders, parent_path)
 
-        # Calculate splits
-        train_size = int(0.8 * lowest_count)
-        val_size = int(0.1 * lowest_count)
-        test_size = lowest_count - train_size - val_size
-
-        # Randomly split images
-        random.shuffle(all_image_paths)
-        train_images = all_image_paths[:train_size]
-        val_images = all_image_paths[train_size:train_size + val_size]
-        test_images = all_image_paths[train_size + val_size:]
-
-        print(f"{chemistry}: train={len(train_images)}, val={len(val_images)}, test={len(test_images)}")
-        
-        # Transfer files
-        image_dict = {'train': train_images, 'val': val_images, 'test': test_images}
-        transfer_files(store_path, image_dict)
+    print('Transfering Files.....')
+    transfer_files(train_val_test_total_dict, parent_path, store_path=del_path)
 
 
 if __name__ == "__main__":
     parent_path = r'C:\Users\MJone\Documents\SIADS699\processed_images'
-    exclude_folders = ['all_images', 'model_prep']
-    store_path = os.path.join(parent_path, 'model_prep')
-    
-    chemistry_folders, lowest_count = get_folders(parent_path, exclude_folders)
-    print(f'Found {len(chemistry_folders)} chemistry folders')
-    print(f'Will sample {lowest_count} images from each')
-    
-    if lowest_count > 0:
-        sample_data(chemistry_folders, lowest_count, store_path, seed=42)
-    else:
-        print("No images found in chemistry folders")
+    exclude_folders = ['all_images', 'model_prep', 'stored_models']
+    chemistry_folders = ['LFP', 'LCO', 'NCA', 'NMC']
+    main(parent_path, exclude_folders)
