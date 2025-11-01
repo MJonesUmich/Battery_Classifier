@@ -1,6 +1,30 @@
 import os 
 import random
 import pandas as pd
+import numpy as np
+ 
+
+def extract_cycles(input_df, max_cycles, file_name, output_folder, downsample_ratio=0.20, seed=42):
+    np.random.seed(seed)
+    unique_cycles = input_df['Cycle_Count'].unique()
+    interval_step = max(1, int(1.0 / downsample_ratio))
+
+    # If fewer cycles than max_cycles, take all
+    if len(unique_cycles) <= max_cycles:
+        selected_cycles = unique_cycles
+    else:
+        selected_cycles = np.random.choice(unique_cycles, size=max_cycles, replace=False)
+    
+    # Collect downsampled data
+    all_cycles = []
+    for cycle in selected_cycles:
+        sub_df = input_df[input_df['Cycle_Count'] == cycle].reset_index(drop=True)
+        downsampled_df = sub_df.iloc[::interval_step, :].reset_index(drop=True)
+        all_cycles.append(downsampled_df)
+
+    # Combine into one DataFrame
+    combined_df = pd.concat(all_cycles, ignore_index=True)
+    return combined_df
 
 
 def create_folder_structure(base_dir, model_folders, exclusion_list):
@@ -13,9 +37,9 @@ def create_folder_structure(base_dir, model_folders, exclusion_list):
             os.makedirs(chemistry_path, exist_ok=True)
 
 
-def transfer_files(train_val_test_dict, base_input_folder, base_output_folderpath, chemistry, downsample_ratio=0.20):
+def transfer_files(train_val_test_dict, base_input_folder, 
+                   base_output_folderpath, chemistry, downsample_ratio=0.20, max_cycles=100):
     # protect downsample_ratio and compute integer step
-    interval_step = max(1, int(1.0 / downsample_ratio))
 
     for split, file_list in train_val_test_dict.items():
         dest_dir = os.path.join(base_output_folderpath, split, chemistry)
@@ -23,17 +47,17 @@ def transfer_files(train_val_test_dict, base_input_folder, base_output_folderpat
         copied = 0
         for file in file_list:
             src_path = os.path.join(base_input_folder, chemistry, file)
-            df = pd.read_csv(src_path)
-            downsampled = df.iloc[::interval_step, :].reset_index(drop=True)
+            read_df = pd.read_csv(src_path)
             out_path = os.path.join(dest_dir, file)
-            # skip if same file or already exists
+            out_path = out_path[0:-4] + f"_{int(max_cycles)}_cycles_downsampled_to_{int(downsample_ratio*100)}_pct.csv"
+            combined_df = extract_cycles(read_df, max_cycles, file, out_path, downsample_ratio=0.20, seed=42)
             if os.path.abspath(src_path) == os.path.abspath(out_path):
                 print(f"Skipping same-file: {src_path}")
                 continue
             if os.path.exists(out_path):
                 print(f"Destination exists, skipping: {out_path}")
                 continue
-            downsampled.to_csv(out_path, index=False)
+            combined_df.to_csv(out_path, index=False)
             copied += 1
         print(f"Copied {copied} files to {split}/{chemistry}")
 
@@ -58,11 +82,12 @@ def main(base_dir, chemistries):
     exclusion_list = ['all_data', 'model_prep', 'stored_models']
     base_output_folderpath = os.path.join(base_dir, 'model_prep')
     create_folder_structure(base_dir, model_folders, exclusion_list)
-    
+
     for chemistry in chemistries: 
         input_folderpath = os.path.join(base_dir, chemistry)
         train_val_test_dict = prep_train_test_split(input_folderpath,random_seed=42)
-        transfer_files(train_val_test_dict, base_dir, base_output_folderpath, chemistry, downsample_ratio=0.25)
+        transfer_files(train_val_test_dict, base_dir, base_output_folderpath, chemistry, 
+                       downsample_ratio=0.25, max_cycles=100 )
 
 
 if __name__ == "__main__":
