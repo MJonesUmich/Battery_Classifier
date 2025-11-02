@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from utils.help_function import check_file_string, load_meta_properties
+from utils.help_function import check_file_string, impute_soc, load_meta_properties
 
 
 @dataclass
@@ -259,7 +259,6 @@ def parse_file(file_path, cell_initial_capacity, cell_C_rate, method="excel"):
 
 
 def interpolate_df(input_df, n_points=100):
-    return input_df
     direction = input_df.direction.iloc[0]
     input_df.drop(columns=["direction"], inplace=True)
     n_points = 100  # target number of samples
@@ -278,7 +277,14 @@ def interpolate_df(input_df, n_points=100):
 
 
 def split_charge_discharge(
-    vmax_idx, vmin_idx, iteration_num, cycle_df, vmax, vmin, tolerance=0.01
+    vmax_idx,
+    vmin_idx,
+    iteration_num,
+    cycle_df,
+    vmax,
+    vmin,
+    cell_capacity,
+    tolerance=0.01,
 ):
     # clip data to initial until Vmax, then from discharge start to Vmin
     disch_start = cycle_df[cycle_df["Current(A)"] < 0 - tolerance].index[0]
@@ -299,6 +305,19 @@ def split_charge_discharge(
         )
         charge_cycle_df["direction"] = "charge"
         discharge_cycle_df["direction"] = "discharge"
+
+        # Add SOC feature
+        charge_cycle_df = impute_soc(
+            input_chemistry="LCO",
+            input_df=charge_cycle_df,
+            input_capacity=cell_capacity,
+        )
+
+        discharge_cycle_df = impute_soc(
+            input_chemistry="LCO",
+            input_df=discharge_cycle_df,
+            input_capacity=cell_capacity,
+        )
 
         # interpolate charge_cyle & discharge cycle
         interp_charge_cycle_df = interpolate_df(charge_cycle_df)
@@ -346,13 +365,15 @@ def generate_figures(
     # Generate charge plot
     fig = plt.figure(figsize=(10, 6))
     plt.plot(
-        charge_cycle_df["Charge_Time(s)"],
+        charge_cycle_df["SOC"],
         charge_cycle_df["Voltage(V)"],
         "b-",
         linewidth=2,
     )
-    plt.xlabel("Charge Time (s)", fontsize=12)
+    plt.xlabel("SOC (%)", fontsize=12)
     plt.ylabel("Voltage (V)", fontsize=12)
+    plt.ylim(2, 4.3)
+    plt.xlim(0, 100)
     plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
     plt.grid(True, alpha=0.3)
     save_string = f"Cycle_{cycle}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
@@ -363,13 +384,15 @@ def generate_figures(
     # Generate discharge plot
     fig = plt.figure(figsize=(10, 6))
     plt.plot(
-        discharge_cycle_df["Discharge_Time(s)"],
+        discharge_cycle_df["SOC"],
         discharge_cycle_df["Voltage(V)"],
         "r-",
         linewidth=2,
     )
-    plt.xlabel("Discharge Time (s)", fontsize=12)
+    plt.xlabel("SOC (%)", fontsize=12)
     plt.ylabel("Voltage (V)", fontsize=12)
+    plt.ylim(2, 4.3)
+    plt.xlim(0, 100)
     plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
     plt.grid(True, alpha=0.3)
     save_string = f"Cycle_{cycle}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png"
@@ -481,6 +504,7 @@ def process_single_subfolder(
                             cycle_df,
                             cell_meta.vmax,
                             cell_meta.vmin,
+                            cell_meta.initial_capacity,
                             tolerance=0.01,
                         )
 
