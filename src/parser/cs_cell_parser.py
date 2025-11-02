@@ -6,11 +6,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-
-import matplotlib
-
-matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -22,24 +17,21 @@ from utils.help_function import load_meta_properties
 class ProcessingConfig:
     """Configuration class for CS2 data processing."""
 
-    base_data_path: str = "assets/raw_data/CS2"
-    output_data_path: str = "processed_datasets/LCO"
-    output_images_path: str = "processed_images/LCO"
-    required_columns: List[str] = None
+    raw_data_rel_path: str = os.path.join("assets", "raw", "CS2")
+    processed_rel_root: str = os.path.join("assets", "processed")
+    chemistry: str = "LCO"
+    sample_points: int = 100
 
-    def __post_init__(self):
-        if self.required_columns is None:
-            self.required_columns = [
-                "Current(A)",
-                "Voltage(V)",
-                "Test_Time(s)",
-                "Cycle_Count",
-                "Delta_Time(s)",
-                "Delta_Ah",
-                "Ah_throughput",
-                "EFC",
-                "C_rate",
-            ]
+    def get_raw_data_path(self, project_root: str) -> str:
+        return os.path.join(project_root, self.raw_data_rel_path)
+
+    def get_processed_dir(
+        self, project_root: str, battery_id: Optional[str] = None
+    ) -> str:
+        base = os.path.join(project_root, self.processed_rel_root, self.chemistry)
+        if battery_id:
+            return os.path.join(base, battery_id)
+        return base
 
 
 @dataclass
@@ -174,6 +166,7 @@ def load_from_text_file(file_path):
     df = df[desired_cols].dropna().reset_index(drop=True)
     df["Voltage(V)"] = df["Voltage(V)"] / 1000  # Convert mV to V
     df["Current(A)"] = df["Current(A)"] / 1000  # Convert mA to A
+    df["Test_Time(s)"] = df["Test_Time(s)"] * 60.0  # Source files store time in minutes
     return df
 
 
@@ -394,173 +387,167 @@ def parse_file(
     return df
 
 
-def generate_single_cycle_figures(
-    cycle_data,
-    cycle,
-    cycle_index,
-    vmax,
-    vmin,
-    c_rate,
-    temperature,
-    battery_ID,
-    battery_output_dir,
-    tolerance=0.01,
-):
-    """Generate figures for a single cycle - designed for multithreading."""
-    try:
-        cycle_df = cycle_data
-
-        # find where voltage first hits vmax and vmin, and where first discharge occurs
-        vmax_matches = cycle_df[cycle_df["Voltage(V)"] >= vmax - tolerance]
-        vmin_matches = cycle_df[cycle_df["Voltage(V)"] <= vmin + tolerance]
-        disch_matches = cycle_df[cycle_df["Current(A)"] < 0 - tolerance]
-
-        if len(vmax_matches) == 0 or len(vmin_matches) == 0 or len(disch_matches) == 0:
-            print(f"Skipping cycle {cycle} - missing required voltage/current data")
-            return
-
-        vmax_idx = vmax_matches.index[0]
-        vmin_idx = vmin_matches.index[0]
-        disch_start = disch_matches.index[0]
-
-        # clip data to initial until Vmax, then from discharge start to Vmin
-        charge_cycle_df = cycle_df.loc[0:vmax_idx].copy()
-        discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx].copy()
-
-        # Check if we have valid data for plotting
-        if len(charge_cycle_df) < 2 or len(discharge_cycle_df) < 2:
-            print(f"Skipping cycle {cycle} - insufficient data points after filtering")
-            return
-
-        # Calculate relative time for charge and discharge cycles
-        if len(charge_cycle_df) > 0:
-            charge_cycle_df["Charge_Time(s)"] = (
-                charge_cycle_df["Test_Time(s)"]
-                - charge_cycle_df["Test_Time(s)"].iloc[0]
-            )
-        if len(discharge_cycle_df) > 0:
-            discharge_cycle_df["Discharge_Time(s)"] = (
-                discharge_cycle_df["Test_Time(s)"]
-                - discharge_cycle_df["Test_Time(s)"].iloc[0]
-            )
-
-        # Generate charge plot
-        fig1 = plt.figure(figsize=(10, 6))
-        plt.plot(
-            charge_cycle_df["Charge_Time(s)"],
-            charge_cycle_df["Voltage(V)"],
-            "b-",
-            linewidth=2,
-        )
-        plt.xlabel("Charge Time (s)", fontsize=12)
-        plt.ylabel("Voltage (V)", fontsize=12)
-        plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
-        plt.grid(True, alpha=0.3)
-        save_string = os.path.join(
-            battery_output_dir,
-            f"Cycle_{cycle_index+1}_charge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
-        )
-        plt.savefig(save_string, dpi=100, bbox_inches="tight")
-        plt.close(fig1)
-
-        # Generate discharge plot
-        fig2 = plt.figure(figsize=(10, 6))
-        plt.plot(
-            discharge_cycle_df["Discharge_Time(s)"],
-            discharge_cycle_df["Voltage(V)"],
-            "r-",
-            linewidth=2,
-        )
-        plt.xlabel("Discharge Time (s)", fontsize=12)
-        plt.ylabel("Voltage (V)", fontsize=12)
-        plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
-        plt.grid(True, alpha=0.3)
-        save_string = os.path.join(
-            battery_output_dir,
-            f"Cycle_{cycle_index+1}_discharge_Crate_{c_rate}_tempK_{temperature}_batteryID_{battery_ID}.png",
-        )
-        plt.savefig(save_string, dpi=100, bbox_inches="tight")
-        plt.close(fig2)
-
-    except Exception as e:
-        print(f"Error generating figures for cycle {cycle}: {str(e)}")
+def compute_current_threshold(current_series: pd.Series) -> float:
+    """Compute a threshold to separate charge and discharge modes."""
+    non_zero = np.abs(current_series[current_series != 0])
+    if len(non_zero) == 0:
+        return 1e-4
+    return max(0.05 * np.nanmedian(non_zero), 1e-4)
 
 
-def generate_figures(
-    df,
-    vmax,
-    vmin,
-    c_rate,
-    temperature,
-    battery_ID,
-    output_dir,
-    tolerance=0.01,
-    one_fig_only=False,
-    max_workers=20,  # Increased thread count for cycle processing
-):
-    # Create battery-specific subdirectory
-    battery_output_dir = os.path.join(output_dir, battery_ID)
-    os.makedirs(battery_output_dir, exist_ok=True)
+def resample_cycle_segment(
+    segment_df: pd.DataFrame, sample_points: int
+) -> pd.DataFrame:
+    """Resample a cycle segment to a fixed number of points."""
+    required_cols = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+    if segment_df is None or segment_df.empty:
+        return pd.DataFrame()
 
-    unique_cycles = df["Cycle_Count"].unique()
+    segment = segment_df[required_cols].dropna()
+    if segment.empty:
+        return pd.DataFrame()
 
-    # If vmax or vmin are None or invalid, calculate from data
-    if vmax is None or vmin is None or vmax <= 0 or vmin <= 0:
-        data_vmax = df["Voltage(V)"].max()
-        data_vmin = df["Voltage(V)"].min()
-        vmax = data_vmax * 0.95  # Use 95% of max voltage
-        vmin = data_vmin * 1.05  # Use 105% of min voltage
-        print(f"Using calculated voltage limits: vmax={vmax:.3f}V, vmin={vmin:.3f}V")
+    segment = segment.drop_duplicates(subset=["Test_Time(s)"])
+    segment = segment.sort_values("Test_Time(s)")
+    if segment.empty:
+        return pd.DataFrame()
 
-    print(
-        f"Generating figures for {len(unique_cycles)} cycles using {max_workers} threads..."
-    )
+    time_values = segment["Test_Time(s)"].to_numpy()
+    relative_time = time_values - time_values[0]
 
-    # Prepare cycle data for multithreading
-    cycle_tasks = []
-    for i, cycle in enumerate(unique_cycles):
-        cycle_df = df[df["Cycle_Count"] == cycle]
-        cycle_tasks.append((cycle_df, cycle, i))
-
-    # Process cycles in parallel
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all cycle processing tasks
-        future_to_cycle = {
-            executor.submit(
-                generate_single_cycle_figures,
-                cycle_df,
-                cycle,
-                i,
-                vmax,
-                vmin,
-                c_rate,
-                temperature,
-                battery_ID,
-                battery_output_dir,
-                tolerance,
-            ): (cycle, i)
-            for cycle_df, cycle, i in cycle_tasks
+    result = pd.DataFrame(
+        {
+            "Sample_Index": np.arange(sample_points, dtype=int),
+            "Normalized_Time": np.linspace(0.0, 1.0, sample_points),
         }
-
-        # Wait for all cycles to complete
-        completed_cycles = 0
-        for future in as_completed(future_to_cycle):
-            cycle, cycle_index = future_to_cycle[future]
-            try:
-                future.result()
-                completed_cycles += 1
-                if completed_cycles % 20 == 0 or completed_cycles == len(
-                    unique_cycles
-                ):  # Progress update every 20 cycles
-                    print(
-                        f"🖼️  {battery_ID}: Generated {completed_cycles}/{len(unique_cycles)} cycle images ({round(completed_cycles/len(unique_cycles)*100,1)}%)"
-                    )
-            except Exception as e:
-                print(f"Error processing cycle {cycle}: {str(e)}")
-
-    print(
-        f"✅ {battery_ID}: Figure generation completed - {completed_cycles} cycles processed"
     )
+
+    if len(segment) == 1 or np.isclose(relative_time[-1], 0.0):
+        result["Elapsed_Time(s)"] = np.zeros(sample_points)
+        for column in ["Voltage(V)", "Current(A)"]:
+            result[column] = np.full(sample_points, segment[column].iloc[0])
+        return result
+
+    normalized_time = relative_time / relative_time[-1]
+    target_normalized = result["Normalized_Time"].to_numpy()
+
+    result["Elapsed_Time(s)"] = np.interp(
+        target_normalized, normalized_time, relative_time
+    )
+    for column in ["Voltage(V)", "Current(A)"]:
+        result[column] = np.interp(
+            target_normalized, normalized_time, segment[column].to_numpy()
+        )
+
+    return result
+
+
+def split_cycle_segments(
+    cycle_df: pd.DataFrame, tolerance: float = 1e-4
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a cycle into charge and discharge segments based on current direction."""
+    if cycle_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    current = cycle_df["Current(A)"].to_numpy()
+    positive_indices = np.where(current > tolerance)[0]
+    negative_indices = np.where(current < -tolerance)[0]
+
+    charge_segment = pd.DataFrame()
+    discharge_segment = pd.DataFrame()
+
+    if positive_indices.size:
+        charge_start = positive_indices[0]
+        neg_after_charge = negative_indices[negative_indices > charge_start]
+        charge_end = neg_after_charge[0] if neg_after_charge.size else len(cycle_df)
+        charge_segment = cycle_df.iloc[charge_start:charge_end].copy()
+
+    if negative_indices.size:
+        discharge_start = negative_indices[0]
+        pos_after_discharge = positive_indices[positive_indices > discharge_start]
+        discharge_end = pos_after_discharge[0] if pos_after_discharge.size else len(cycle_df)
+        discharge_segment = cycle_df.iloc[discharge_start:discharge_end].copy()
+
+    return charge_segment, discharge_segment
+
+
+def prepare_resampled_outputs(
+    agg_df: pd.DataFrame,
+    cell_meta: CellMetadata,
+    config: ProcessingConfig,
+    battery_id: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Prepare resampled charge and discharge dataframes for export."""
+    columns_order = [
+        "battery_id",
+        "chemistry",
+        "cycle_index",
+        "sample_index",
+        "normalized_time",
+        "elapsed_time_s",
+        "voltage_v",
+        "current_a",
+        "c_rate",
+        "temperature_k",
+    ]
+
+    if agg_df.empty:
+        empty_df = pd.DataFrame(columns=columns_order)
+        return empty_df.copy(), empty_df.copy()
+
+    charge_segments: List[pd.DataFrame] = []
+    discharge_segments: List[pd.DataFrame] = []
+
+    for cycle in sorted(agg_df["Cycle_Count"].dropna().unique()):
+        cycle_df = agg_df[agg_df["Cycle_Count"] == cycle].copy()
+        if cycle_df.empty:
+            continue
+
+        cycle_df = cycle_df.sort_values("Test_Time(s)")
+        charge_segment, discharge_segment = split_cycle_segments(cycle_df)
+
+        for label, segment in (("charge", charge_segment), ("discharge", discharge_segment)):
+            if segment.empty:
+                continue
+
+            resampled = resample_cycle_segment(segment, config.sample_points)
+            if resampled.empty:
+                continue
+
+            resampled.rename(
+                columns={
+                    "Sample_Index": "sample_index",
+                    "Normalized_Time": "normalized_time",
+                    "Elapsed_Time(s)": "elapsed_time_s",
+                    "Voltage(V)": "voltage_v",
+                    "Current(A)": "current_a",
+                },
+                inplace=True,
+            )
+            resampled["battery_id"] = battery_id
+            resampled["chemistry"] = config.chemistry
+            resampled["cycle_index"] = int(cycle)
+            resampled["c_rate"] = cell_meta.c_rate
+            resampled["temperature_k"] = cell_meta.temperature
+            resampled = resampled[columns_order]
+
+            if label == "charge":
+                charge_segments.append(resampled)
+            else:
+                discharge_segments.append(resampled)
+
+    charge_df = (
+        pd.concat(charge_segments, ignore_index=True)
+        if charge_segments
+        else pd.DataFrame(columns=columns_order)
+    )
+    discharge_df = (
+        pd.concat(discharge_segments, ignore_index=True)
+        if discharge_segments
+        else pd.DataFrame(columns=columns_order)
+    )
+
+    return charge_df, discharge_df
 
 
 def get_cs2_subfolders(base_path):
@@ -633,74 +620,57 @@ def process_files_in_subfolder(
 
 
 def save_processed_data(
-    agg_df: pd.DataFrame, cell_id: str, config: ProcessingConfig
-) -> str:
-    """Save processed data to CSV file."""
-    available_columns = [
-        col for col in config.required_columns if col in agg_df.columns
-    ]
-    output_df = agg_df[available_columns]
-
-    csv_filename = f"{cell_id.lower()}_aggregated_data.csv"
-    csv_path = os.path.join(config.output_data_path, csv_filename)
-
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    output_df.to_csv(csv_path, index=False)
-    print(f"💾 Saved CSV file: {csv_path}")
-
-    return csv_path
-
-
-def generate_and_save_figures(
     agg_df: pd.DataFrame,
-    cell_meta: CellMetadata,
     cell_id: str,
-    error_dict: Dict[str, str],
+    cell_meta: CellMetadata,
     config: ProcessingConfig,
-) -> None:
-    """Generate and save figures for the processed data."""
-    try:
-        print(
-            f"🖼️  Starting figure generation for {cell_id} ({agg_df.shape[0]} data points, {agg_df['Cycle_Count'].nunique()} cycles)"
-        )
+    output_dir: str,
+) -> Tuple[str, str]:
+    """Save resampled charge and discharge data to CSV files."""
+    charge_df, discharge_df = prepare_resampled_outputs(
+        agg_df, cell_meta, config, cell_id
+    )
 
-        generate_figures(
-            agg_df,
-            cell_meta.vmax,
-            cell_meta.vmin,
-            cell_meta.c_rate,
-            cell_meta.temperature,
-            battery_ID=cell_id,
-            output_dir=config.output_images_path,
-            one_fig_only=False,
-        )
-        print(f"✅ Generated figures for {cell_id}")
+    os.makedirs(output_dir, exist_ok=True)
 
-    except Exception as e:
-        print(f"❌ Error generating figures for {cell_id}: {str(e)}")
-        error_dict[f"figures_{cell_id}"] = str(e)
+    charge_path = os.path.join(output_dir, f"{cell_id}_charge_aggregated_data.csv")
+    discharge_path = os.path.join(
+        output_dir, f"{cell_id}_discharge_aggregated_data.csv"
+    )
+
+    charge_df.to_csv(charge_path, index=False)
+    discharge_df.to_csv(discharge_path, index=False)
+
+    print(f"💾 Saved charge CSV: {charge_path}")
+    print(f"💾 Saved discharge CSV: {discharge_path}")
+
+    return charge_path, discharge_path
 
 
-def save_error_log(
-    error_dict: Dict[str, str], cell_id: str, config: ProcessingConfig
-) -> None:
+def save_error_log(error_dict: Dict[str, str], cell_id: str, output_dir: str) -> None:
     """Save error log for the subfolder."""
     if not error_dict:
         return
 
+    os.makedirs(output_dir, exist_ok=True)
+
     error_df = pd.DataFrame(
         list(error_dict.items()), columns=["File_Name", "Error_Message"]
     )
-    error_log_path = os.path.join(config.output_data_path, f"error_log_{cell_id}.csv")
+    error_log_path = os.path.join(output_dir, f"error_log_{cell_id}.csv")
     error_df.to_csv(error_log_path, index=False)
     print(f"📝 Saved error log: {error_log_path}")
 
 
 def process_single_subfolder(
-    subfolder: str, cs2_base_path: str, meta_df: pd.DataFrame, config: ProcessingConfig
+    subfolder: str,
+    raw_base_path: str,
+    processed_base_path: str,
+    meta_df: pd.DataFrame,
+    config: ProcessingConfig,
 ) -> None:
     """Process a single subfolder completely."""
-    folder_path = os.path.join(cs2_base_path, subfolder)
+    folder_path = os.path.join(raw_base_path, subfolder)
     print(f"\nProcessing folder: {subfolder}")
 
     try:
@@ -724,13 +694,11 @@ def process_single_subfolder(
             return
 
         # Save processed data
-        save_processed_data(agg_df, subfolder, config)
-
-        # Generate figures
-        generate_and_save_figures(agg_df, cell_meta, subfolder, error_dict, config)
+        output_dir = os.path.join(processed_base_path, subfolder)
+        save_processed_data(agg_df, subfolder, cell_meta, config, output_dir)
 
         # Save error log
-        save_error_log(error_dict, subfolder, config)
+        save_error_log(error_dict, subfolder, output_dir)
 
     except Exception as e:
         print(f"Error processing {subfolder}: {str(e)}")
@@ -751,10 +719,12 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
     # Setup paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.join(script_dir, "..", "..")
-    cs2_base_path = os.path.join(project_root, config.base_data_path)
+    raw_cs2_base_path = config.get_raw_data_path(project_root)
+    processed_cs2_base_path = config.get_processed_dir(project_root)
+    os.makedirs(processed_cs2_base_path, exist_ok=True)
 
     # Get subfolders
-    cs2_subfolders = get_cs2_subfolders(cs2_base_path)
+    cs2_subfolders = get_cs2_subfolders(raw_cs2_base_path)
     print(f"📂 Found {len(cs2_subfolders)} CS2 batteries: {cs2_subfolders}")
 
     # Process subfolders with 20 threads (increased from 10)
@@ -762,7 +732,12 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
         # Submit all subfolder processing tasks
         future_to_subfolder = {
             executor.submit(
-                process_single_subfolder, subfolder, cs2_base_path, meta_df, config
+                process_single_subfolder,
+                subfolder,
+                raw_cs2_base_path,
+                processed_cs2_base_path,
+                meta_df,
+                config,
             ): subfolder
             for subfolder in cs2_subfolders
         }

@@ -7,13 +7,13 @@
 # *.zip 
 # *.m
 *.7z
-assets/raw_data/**/*.csv
-assets/raw_data/**/*.mat
-assets/raw_data/**/*.xlsx
-assets/raw_data/**/*.txt
-assets/raw_data/**/*.json
-assets/raw_data/**/*.xls
-assets/raw_data/**/*.m
+assets/raw/**/*.csv
+assets/raw/**/*.mat
+assets/raw/**/*.xlsx
+assets/raw/**/*.txt
+assets/raw/**/*.json
+assets/raw/**/*.xls
+assets/raw/**/*.m
 
 processed_images/*.csv
 
