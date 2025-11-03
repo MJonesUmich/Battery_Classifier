@@ -498,9 +498,9 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 
 if __name__ == "__main__":
     main()
-============================================================
-🎉 All ISU batteries processed successfully!
-⏱️  Total processing time: 00:25:35
-📊 Processed 251 batteries with 10 threads
-⚡ Average time per battery: 6.12 seconds
-============================================================
+# ============================================================
+# 🎉 All ISU batteries processed successfully!
+# ⏱️  Total processing time: 00:25:35
+# 📊 Processed 251 batteries with 10 threads
+# ⚡ Average time per battery: 6.12 seconds
+# ============================================================
