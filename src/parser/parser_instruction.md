@@ -30,9 +30,11 @@ The following modules under `src/parser/` must conform to this spec:
 2. Clip the dataframe to complete cycles (drop warm-up/cleanup noise outside the charge↔discharge alternation window).
 3. For every cycle:
    - Split into charge and discharge segments using current sign (positive = charge, negative = discharge) with a small tolerance (`1e-4 A`) to filter jitter.
-   - Resample each segment to **exactly 100 points**:
-     - If the raw segment has more than 100 samples, downsample evenly.
-     - If it has fewer, interpolate to reach 100 samples.
+   - Ensure each segment has at least 100 raw samples; if either segment falls short, drop the entire cycle from the aggregated output (no interpolation to fill the gap).
+   - Resample eligible segments to **exactly 100 points** using an interpolation-first pipeline:
+     - Derive a normalized time axis `t_norm = (elapsed_time_s - elapsed_time_s.min()) / (elapsed_time_s.max() - elapsed_time_s.min())`.
+     - Build 1D interpolants for `voltage_v`, `current_a`, and any optional continuous columns with `numpy.interp` (fallback to `scipy.interpolate.PchipInterpolator` when shape preservation is critical).
+     - Evaluate the interpolants on `numpy.linspace(0.0, 1.0, 100)` and back-project to real time with `numpy.linspace(0.0, raw_duration_s, 100)` to populate `normalized_time`, `elapsed_time_s`, and `sample_index` (`0..99`).
    - Preserve monotonic `Test_Time(s)` → `elapsed_time_s` so the last resampled row reflects the real cycle duration.
 4. Attach metadata columns to every row in the aggregated output:
    - `battery_id`
@@ -59,10 +61,12 @@ The following modules under `src/parser/` must conform to this spec:
   - Continuous `cycle_index` starting at 1.
   - `sample_index` spanning `0..99` for every cycle.
   - `elapsed_time_s` in seconds (0 at start, increasing to the segment duration).
+  - No more than 100 cycles per file (discard any additional cycles beyond this cap).
 
 ## Testing & Validation
 - Unit-test the resampling helper(s) to cover:
-  - Segments with >100 rows (downsampling) and <100 rows (interpolation).
+  - Segments with >100 rows (interpolation + sampling) and <100 rows (cycle gets skipped).
+  - Interpolant fidelity comparisons between `numpy.interp` and `PchipInterpolator` for representative cycles.
   - Sign-change detection at low currents.
   - Minute-to-second conversion for `.txt` imports.
 - Add smoke/integration tests that run a parser against a known small fixture and assert:
