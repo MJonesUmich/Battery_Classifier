@@ -38,6 +38,7 @@ class ProcessingConfig:
     sample_points: int = 100
     current_tolerance: float = 1e-4
     metadata_sheet: str = "General_Infos"
+    max_cycles: int = 100
 
     def get_raw_base_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -61,6 +62,9 @@ class CellMetadata:
     vmax: float
     vmin: float
     chemistry: str
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 @dataclass
@@ -343,6 +347,41 @@ def split_cycle_segments(
     return charge_segment, discharge_segment
 
 
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame, min_samples: int
+) -> Optional[pd.DataFrame]:
+    """Sanitize a raw segment and enforce minimum sample requirements."""
+
+    required = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    if any(column not in segment_df.columns for column in required):
+        return None
+
+    sanitized = segment_df.copy()
+
+    for column in required:
+        sanitized[column] = pd.to_numeric(sanitized[column], errors="coerce")
+
+    sanitized.dropna(subset=required, inplace=True)
+    if sanitized.empty:
+        return None
+
+    sanitized.drop_duplicates(subset="Test_Time(s)", inplace=True)
+    sanitized.sort_values("Test_Time(s)", inplace=True)
+
+    if len(sanitized) < min_samples:
+        return None
+
+    times = sanitized["Test_Time(s)"].to_numpy()
+    if np.isclose(times[-1] - times[0], 0.0):
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
 def prepare_resampled_outputs(
     agg_df: pd.DataFrame,
     chemistry: str,
@@ -373,29 +412,54 @@ def prepare_resampled_outputs(
     charge_segments: List[pd.DataFrame] = []
     discharge_segments: List[pd.DataFrame] = []
 
-    for cycle_index in sorted(agg_df["cycle_index"].unique()):
+    unique_cycles = sorted(int(idx) for idx in agg_df["cycle_index"].dropna().unique())
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    max_cycles = max(1, int(config.max_cycles))
+    valid_cycle_count = 0
+
+    for cycle_index in unique_cycles:
+        if valid_cycle_count >= max_cycles:
+            break
+
         cycle_df = agg_df[agg_df["cycle_index"] == cycle_index].copy()
         if cycle_df.empty:
             continue
 
-        charge_segment, discharge_segment = split_cycle_segments(
+        charge_segment_raw, discharge_segment_raw = split_cycle_segments(
             cycle_df, tolerance=config.current_tolerance
         )
 
-        for label, segment in (
-            ("charge", charge_segment),
-            ("discharge", discharge_segment),
+        charge_segment = prepare_cycle_segment(
+            charge_segment_raw, min_samples_required
+        )
+        discharge_segment = prepare_cycle_segment(
+            discharge_segment_raw, min_samples_required
+        )
+
+        if charge_segment is None or discharge_segment is None:
+            continue
+
+        charge_resampled = resample_cycle_segment(
+            charge_segment, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment, config.sample_points
+        )
+
+        if charge_resampled.empty or discharge_resampled.empty:
+            continue
+
+        valid_cycle_count += 1
+
+        for label, segment, resampled in (
+            ("charge", charge_segment, charge_resampled),
+            ("discharge", discharge_segment, discharge_resampled),
         ):
-            if segment.empty:
-                continue
-
-            resampled = resample_cycle_segment(segment, config.sample_points)
-            if resampled.empty:
-                continue
-
+            resampled = resampled.copy()
             resampled["battery_id"] = battery_key
             resampled["chemistry"] = chemistry
-            resampled["cycle_index"] = int(cycle_index)
+            resampled["cycle_index"] = valid_cycle_count
+
             if "c_rate" in segment.columns:
                 c_rate_series = segment["c_rate"].dropna()
                 c_rate_value = (
@@ -425,16 +489,21 @@ def prepare_resampled_outputs(
             else:
                 discharge_segments.append(resampled)
 
-    charge_df = (
-        pd.concat(charge_segments, ignore_index=True)
-        if charge_segments
-        else pd.DataFrame(columns=columns)
-    )
-    discharge_df = (
-        pd.concat(discharge_segments, ignore_index=True)
-        if discharge_segments
-        else pd.DataFrame(columns=columns)
-    )
+    empty = pd.DataFrame(columns=columns)
+
+    if charge_segments:
+        charge_df = pd.concat(charge_segments, ignore_index=True)
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"])
+        charge_df = charge_df.reset_index(drop=True)
+    else:
+        charge_df = empty.copy()
+
+    if discharge_segments:
+        discharge_df = pd.concat(discharge_segments, ignore_index=True)
+        discharge_df = discharge_df.sort_values(["cycle_index", "sample_index"])
+        discharge_df = discharge_df.reset_index(drop=True)
+    else:
+        discharge_df = empty.copy()
 
     return charge_df, discharge_df
 
@@ -613,6 +682,8 @@ def process_file_group(
 
     ordered_files = sorted(files, key=lambda item: item.c_rate)
 
+    reached_cycle_limit = False
+
     for info in ordered_files:
         try:
             raw_df = load_source_file(info.path)
@@ -632,6 +703,10 @@ def process_file_group(
                 if cycle_df.empty:
                     continue
 
+                if cycle_index >= config.max_cycles:
+                    reached_cycle_limit = True
+                    break
+
                 cycle_index += 1
                 cycle_df = cycle_df.copy()
                 cycle_df["cycle_index"] = cycle_index
@@ -639,8 +714,20 @@ def process_file_group(
                 cycle_df["temperature_k"] = info.temperature_k
                 aggregated_cycles.append(cycle_df)
 
+            if reached_cycle_limit:
+                break
+
         except Exception as exc:
             errors[info.file_name] = str(exc)
+
+        if reached_cycle_limit:
+            break
+
+    if reached_cycle_limit:
+        errors.setdefault(
+            "cycle_limit",
+            f"Reached maximum cycle limit of {config.max_cycles}; remaining cycles were skipped",
+        )
 
     if not aggregated_cycles:
         return pd.DataFrame(), errors
@@ -743,3 +830,5 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 if __name__ == "__main__":
     main()
 
+# Stanford parsing finished
+# Total processing time: 00:10:07

@@ -24,6 +24,7 @@ class ProcessingConfig:
     chemistry: str = "LCO"
     sample_points: int = 100
     thread_count: int = 20
+    max_cycles: int = 100
 
     def get_raw_data_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -46,6 +47,9 @@ class CellMetadata:
     temperature: float
     vmax: float
     vmin: float
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 def extract_date(file_name: str) -> datetime.date:
@@ -422,6 +426,38 @@ def split_cycle_segments(
     return charge_segment, discharge_segment
 
 
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame, min_samples: int
+) -> Optional[pd.DataFrame]:
+    """Sanitize segment data and enforce minimum sample counts."""
+
+    required_cols = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    missing = [col for col in required_cols if col not in segment_df.columns]
+    if missing:
+        return None
+
+    sanitized = segment_df[required_cols].copy()
+
+    for col in required_cols:
+        sanitized[col] = pd.to_numeric(sanitized[col], errors="coerce")
+
+    sanitized = sanitized.dropna()
+    if sanitized.empty:
+        return None
+
+    sanitized = sanitized.drop_duplicates(subset=["Test_Time(s)"])
+    sanitized = sanitized.sort_values("Test_Time(s)")
+
+    if len(sanitized) < min_samples:
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
 def prepare_resampled_outputs(
     agg_df: pd.DataFrame,
     cell_meta: CellMetadata,
@@ -450,44 +486,79 @@ def prepare_resampled_outputs(
     charge_segments: List[pd.DataFrame] = []
     discharge_segments: List[pd.DataFrame] = []
 
-    for cycle in sorted(agg_df["Cycle_Count"].dropna().unique()):
+    unique_cycles = sorted(
+        int(cycle) for cycle in agg_df["Cycle_Count"].dropna().unique()
+    )
+
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    max_cycles = getattr(config, "max_cycles", MIN_SEGMENT_SAMPLE_COUNT)
+    if not isinstance(max_cycles, int) or max_cycles <= 0:
+        max_cycles = MIN_SEGMENT_SAMPLE_COUNT
+
+    valid_cycle_count = 0
+
+    for cycle in unique_cycles:
+        if valid_cycle_count >= max_cycles:
+            break
+
         cycle_df = agg_df[agg_df["Cycle_Count"] == cycle].copy()
         if cycle_df.empty:
             continue
 
         cycle_df = cycle_df.sort_values("Test_Time(s)")
-        charge_segment, discharge_segment = split_cycle_segments(cycle_df)
+        charge_raw, discharge_raw = split_cycle_segments(cycle_df)
 
-        for label, segment in (("charge", charge_segment), ("discharge", discharge_segment)):
-            if segment.empty:
-                continue
+        charge_segment = prepare_cycle_segment(charge_raw, min_samples_required)
+        discharge_segment = prepare_cycle_segment(discharge_raw, min_samples_required)
 
-            resampled = resample_cycle_segment(segment, config.sample_points)
-            if resampled.empty:
-                continue
+        if charge_segment is None or discharge_segment is None:
+            continue
 
-            resampled["battery_id"] = battery_id
-            resampled["chemistry"] = config.chemistry
-            resampled["cycle_index"] = int(cycle)
-            resampled["c_rate"] = cell_meta.c_rate
-            resampled["temperature_k"] = cell_meta.temperature
-            resampled = resampled[columns]
+        charge_resampled = resample_cycle_segment(
+            charge_segment, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment, config.sample_points
+        )
+
+        if charge_resampled.empty or discharge_resampled.empty:
+            continue
+
+        valid_cycle_count += 1
+
+        for label, resampled in (
+            ("charge", charge_resampled),
+            ("discharge", discharge_resampled),
+        ):
+            formatted = resampled.copy()
+            formatted["sample_index"] = formatted["sample_index"].astype(int)
+            formatted["battery_id"] = battery_id
+            formatted["chemistry"] = config.chemistry
+            formatted["cycle_index"] = valid_cycle_count
+            formatted["c_rate"] = cell_meta.c_rate
+            formatted["temperature_k"] = cell_meta.temperature
+            formatted = formatted[columns]
 
             if label == "charge":
-                charge_segments.append(resampled)
+                charge_segments.append(formatted)
             else:
-                discharge_segments.append(resampled)
+                discharge_segments.append(formatted)
 
-    charge_df = (
-        pd.concat(charge_segments, ignore_index=True)
-        if charge_segments
-        else pd.DataFrame(columns=columns)
-    )
-    discharge_df = (
-        pd.concat(discharge_segments, ignore_index=True)
-        if discharge_segments
-        else pd.DataFrame(columns=columns)
-    )
+    empty = pd.DataFrame(columns=columns)
+
+    if charge_segments:
+        charge_df = pd.concat(charge_segments, ignore_index=True)
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"])
+        charge_df = charge_df.reset_index(drop=True)
+    else:
+        charge_df = empty.copy()
+
+    if discharge_segments:
+        discharge_df = pd.concat(discharge_segments, ignore_index=True)
+        discharge_df = discharge_df.sort_values(["cycle_index", "sample_index"])
+        discharge_df = discharge_df.reset_index(drop=True)
+    else:
+        discharge_df = empty.copy()
 
     return charge_df, discharge_df
 
@@ -709,3 +780,9 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 
 if __name__ == "__main__":
     main()
+# ============================================================
+# 🎉 All CX2 subfolders processed successfully!
+# ⏱️  Total processing time: 00:11:58
+# 📊 Processed 9 subfolders with 20 threads
+# ⚡ Average time per subfolder: 79.83 seconds
+# ============================================================

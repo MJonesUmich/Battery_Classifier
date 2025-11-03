@@ -238,7 +238,12 @@ def parse_metadata(csv_path: Path, interim_root: Path) -> Tuple[str, str, str, s
     battery_id = rel_parts[1] if len(rel_parts) >= 2 else csv_path.stem
 
     stem = csv_path.stem.lower()
-    phase = "charge" if "charge" in stem else "discharge" if "discharge" in stem else "unknown"
+    if "discharge" in stem:
+        phase = "discharge"
+    elif "charge" in stem:
+        phase = "charge"
+    else:
+        phase = "unknown"
 
     cycle_match = re.search(r"cycle[_-]?(\d+)", stem)
     cycle = cycle_match.group(1) if cycle_match else "unknown"

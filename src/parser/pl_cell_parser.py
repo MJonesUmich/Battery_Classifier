@@ -22,6 +22,7 @@ class ProcessingConfig:
     processed_rel_root: str = os.path.join("assets", "processed")
     chemistry: str = "LCO"
     sample_points: int = 100
+    max_cycles: int = 100
 
     def get_raw_data_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -44,6 +45,9 @@ class CellMetadata:
     temperature: float
     vmax: float
     vmin: float
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 def extract_date(file_name):
@@ -526,6 +530,40 @@ def split_cycle_segments(
     return charge_segment, discharge_segment
 
 
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame, min_samples: int
+) -> Optional[pd.DataFrame]:
+    """Sanitize and validate cycle segments against sample requirements."""
+
+    required_cols = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    if any(col not in segment_df.columns for col in required_cols):
+        return None
+
+    sanitized = segment_df[required_cols].copy()
+
+    for col in required_cols:
+        sanitized[col] = pd.to_numeric(sanitized[col], errors="coerce")
+
+    sanitized = sanitized.dropna()
+    if sanitized.empty:
+        return None
+
+    sanitized = sanitized.drop_duplicates(subset=["Test_Time(s)"])
+    sanitized = sanitized.sort_values("Test_Time(s)")
+
+    if len(sanitized) < min_samples:
+        return None
+
+    if sanitized["Test_Time(s)"].iloc[-1] <= sanitized["Test_Time(s)"].iloc[0]:
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
 def prepare_resampled_outputs(
     agg_df: pd.DataFrame,
     cell_meta: CellMetadata,
@@ -553,74 +591,100 @@ def prepare_resampled_outputs(
     charge_segments: List[pd.DataFrame] = []
     discharge_segments: List[pd.DataFrame] = []
 
-    for cycle in sorted(agg_df["Cycle_Count"].dropna().unique()):
+    unique_cycles = sorted(
+        int(cycle) for cycle in agg_df["Cycle_Count"].dropna().unique()
+    )
+
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    max_cycles = getattr(config, "max_cycles", MIN_SEGMENT_SAMPLE_COUNT)
+    if not isinstance(max_cycles, int) or max_cycles <= 0:
+        max_cycles = MIN_SEGMENT_SAMPLE_COUNT
+
+    valid_cycle_count = 0
+
+    for cycle in unique_cycles:
+        if valid_cycle_count >= max_cycles:
+            break
+
         cycle_df = agg_df[agg_df["Cycle_Count"] == cycle].copy()
         if cycle_df.empty:
             continue
 
         cycle_df = cycle_df.sort_values("Test_Time(s)")
-        charge_segment, discharge_segment = split_cycle_segments(cycle_df)
+        charge_segment_raw, discharge_segment_raw = split_cycle_segments(cycle_df)
 
-        if not charge_segment.empty:
-            charge_segment = charge_segment.copy()
-        if not discharge_segment.empty:
-            discharge_segment = discharge_segment.copy()
+        charge_segment = prepare_cycle_segment(
+            charge_segment_raw, min_samples_required
+        )
+        discharge_segment = prepare_cycle_segment(
+            discharge_segment_raw, min_samples_required
+        )
 
-        for label, segment in (("charge", charge_segment), ("discharge", discharge_segment)):
-            if segment.empty:
-                continue
+        if charge_segment is None or discharge_segment is None:
+            continue
 
-            segment = segment.copy()
-            if label == "charge":
-                segment["Current(A)"] = (
-                    segment["Current(A)"].replace(0, np.nan).ffill().bfill().fillna(0)
-                )
-            elif label == "discharge":
-                segment["Current(A)"] = (
-                    segment["Current(A)"].replace(0, np.nan).ffill().bfill().fillna(0)
-                )
+        charge_segment = charge_segment.copy()
+        discharge_segment = discharge_segment.copy()
 
-            resampled = resample_cycle_segment(segment, config.sample_points)
-            if resampled.empty:
-                continue
+        charge_resampled = resample_cycle_segment(
+            charge_segment, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment, config.sample_points
+        )
 
-            if label == "charge":
-                resampled["Current(A)"] = np.abs(resampled["Current(A)"])
-            else:
-                resampled["Current(A)"] = -np.abs(resampled["Current(A)"])
+        if charge_resampled.empty or discharge_resampled.empty:
+            continue
 
-            resampled.rename(
+        charge_resampled["Current(A)"] = np.abs(charge_resampled["Current(A)"])
+        discharge_resampled["Current(A)"] = -np.abs(
+            discharge_resampled["Current(A)"]
+        )
+
+        valid_cycle_count += 1
+
+        for label, resampled in (
+            ("charge", charge_resampled),
+            ("discharge", discharge_resampled),
+        ):
+            formatted = resampled.rename(
                 columns={
                     "Sample_Index": "sample_index",
                     "Normalized_Time": "normalized_time",
                     "Elapsed_Time(s)": "elapsed_time_s",
                     "Voltage(V)": "voltage_v",
                     "Current(A)": "current_a",
-                },
-                inplace=True,
-            )
-            resampled["battery_id"] = battery_id
-            resampled["chemistry"] = config.chemistry
-            resampled["cycle_index"] = int(cycle)
-            resampled["c_rate"] = cell_meta.c_rate
-            resampled["temperature_k"] = cell_meta.temperature
-            resampled = resampled[columns_order]
+                }
+            ).copy()
+
+            formatted["sample_index"] = formatted["sample_index"].astype(int)
+            formatted["battery_id"] = battery_id
+            formatted["chemistry"] = config.chemistry
+            formatted["cycle_index"] = valid_cycle_count
+            formatted["c_rate"] = cell_meta.c_rate
+            formatted["temperature_k"] = cell_meta.temperature
+            formatted = formatted[columns_order]
 
             if label == "charge":
-                charge_segments.append(resampled)
+                charge_segments.append(formatted)
             else:
-                discharge_segments.append(resampled)
+                discharge_segments.append(formatted)
 
-    charge_df = (
-        pd.concat(charge_segments, ignore_index=True)
-        if charge_segments
-        else pd.DataFrame(columns=columns_order)
-    )
-    discharge_df = (
-        pd.concat(discharge_segments, ignore_index=True)
-        if discharge_segments
-        else pd.DataFrame(columns=columns_order)
-    )
+    empty_df = pd.DataFrame(columns=columns_order)
+
+    if charge_segments:
+        charge_df = pd.concat(charge_segments, ignore_index=True)
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"])
+        charge_df = charge_df.reset_index(drop=True)
+    else:
+        charge_df = empty_df.copy()
+
+    if discharge_segments:
+        discharge_df = pd.concat(discharge_segments, ignore_index=True)
+        discharge_df = discharge_df.sort_values(["cycle_index", "sample_index"])
+        discharge_df = discharge_df.reset_index(drop=True)
+    else:
+        discharge_df = empty_df.copy()
 
     return charge_df, discharge_df
 
@@ -900,3 +964,9 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 
 if __name__ == "__main__":
     main()
+# ============================================================
+# [INFO] PL processing finished
+# [INFO] Total processing time: 00:00:28
+# [INFO] Subfolders processed: 3
+# [INFO] Average time per subfolder: 9.57 seconds
+# ============================================================

@@ -30,6 +30,7 @@ class ProcessingConfig:
     chemistries: Tuple[str, ...] = ("LFP", "NCA", "NMC")
     sample_points: int = 100
     current_tolerance: float = 1e-4
+    max_cycles: int = 100
 
     def get_raw_base_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -70,6 +71,9 @@ class MatFileInfo:
     @property
     def file_name(self) -> str:
         return os.path.basename(self.path)
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 DEFAULT_METADATA: Dict[str, Dict[str, float]] = {
@@ -430,6 +434,41 @@ def split_cycle_segments(
     return charge_segment, discharge_segment
 
 
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame, min_samples: int
+) -> Optional[pd.DataFrame]:
+    """Sanitize a segment and enforce minimum sample counts."""
+
+    required = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    if any(column not in segment_df.columns for column in required):
+        return None
+
+    sanitized = segment_df[required].copy()
+
+    for column in required:
+        sanitized[column] = pd.to_numeric(sanitized[column], errors="coerce")
+
+    sanitized.dropna(inplace=True)
+    if sanitized.empty:
+        return None
+
+    sanitized.drop_duplicates(subset="Test_Time(s)", inplace=True)
+    sanitized.sort_values("Test_Time(s)", inplace=True)
+
+    if len(sanitized) < min_samples:
+        return None
+
+    times = sanitized["Test_Time(s)"].to_numpy()
+    if np.isclose(times[-1] - times[0], 0.0):
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
 def prepare_resampled_outputs(
     agg_df: pd.DataFrame, cell_meta: CellMetadata, config: ProcessingConfig, battery_key: str
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -455,45 +494,77 @@ def prepare_resampled_outputs(
     charge_segments: List[pd.DataFrame] = []
     discharge_segments: List[pd.DataFrame] = []
 
-    for cycle in sorted(int(c) for c in agg_df["cycle_index"].dropna().unique()):
+    unique_cycles = sorted(int(c) for c in agg_df["cycle_index"].dropna().unique())
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    max_cycles = max(1, int(config.max_cycles))
+    valid_cycle_count = 0
+
+    for cycle in unique_cycles:
+        if valid_cycle_count >= max_cycles:
+            break
+
         cycle_df = agg_df[agg_df["cycle_index"] == cycle].copy()
         if cycle_df.empty:
             continue
 
-        charge_segment, discharge_segment = split_cycle_segments(
+        charge_segment_raw, discharge_segment_raw = split_cycle_segments(
             cycle_df, tolerance=config.current_tolerance
         )
 
-        for label, segment in (("charge", charge_segment), ("discharge", discharge_segment)):
-            if segment.empty:
-                continue
+        charge_segment = prepare_cycle_segment(
+            charge_segment_raw, min_samples_required
+        )
+        discharge_segment = prepare_cycle_segment(
+            discharge_segment_raw, min_samples_required
+        )
 
-            resampled = resample_cycle_segment(segment, config.sample_points)
-            if resampled.empty:
-                continue
+        if charge_segment is None or discharge_segment is None:
+            continue
 
-            resampled["battery_id"] = battery_key
-            resampled["chemistry"] = cell_meta.chemistry
-            resampled["cycle_index"] = int(cycle)
-            resampled["c_rate"] = cell_meta.c_rate
-            resampled["temperature_k"] = cell_meta.temperature
-            resampled = resampled[columns]
+        charge_resampled = resample_cycle_segment(
+            charge_segment, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment, config.sample_points
+        )
+
+        if charge_resampled.empty or discharge_resampled.empty:
+            continue
+
+        valid_cycle_count += 1
+
+        for label, resampled in (
+            ("charge", charge_resampled),
+            ("discharge", discharge_resampled),
+        ):
+            formatted = resampled.copy()
+            formatted["battery_id"] = battery_key
+            formatted["chemistry"] = cell_meta.chemistry
+            formatted["cycle_index"] = valid_cycle_count
+            formatted["c_rate"] = cell_meta.c_rate
+            formatted["temperature_k"] = cell_meta.temperature
+            formatted = formatted[columns]
 
             if label == "charge":
-                charge_segments.append(resampled)
+                charge_segments.append(formatted)
             else:
-                discharge_segments.append(resampled)
+                discharge_segments.append(formatted)
 
-    charge_df = (
-        pd.concat(charge_segments, ignore_index=True)
-        if charge_segments
-        else pd.DataFrame(columns=columns)
-    )
-    discharge_df = (
-        pd.concat(discharge_segments, ignore_index=True)
-        if discharge_segments
-        else pd.DataFrame(columns=columns)
-    )
+    empty_df = pd.DataFrame(columns=columns)
+
+    if charge_segments:
+        charge_df = pd.concat(charge_segments, ignore_index=True)
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"])
+        charge_df = charge_df.reset_index(drop=True)
+    else:
+        charge_df = empty_df.copy()
+
+    if discharge_segments:
+        discharge_df = pd.concat(discharge_segments, ignore_index=True)
+        discharge_df = discharge_df.sort_values(["cycle_index", "sample_index"])
+        discharge_df = discharge_df.reset_index(drop=True)
+    else:
+        discharge_df = empty_df.copy()
 
     return charge_df, discharge_df
 
@@ -623,7 +694,11 @@ def process_single_mat_file(
         if not cycles:
             errors.setdefault("cycles", "No complete charge/discharge cycles detected")
         else:
+            cycle_limit_reached = False
             for idx, cycle_df in enumerate(cycles, start=1):
+                if len(cycle_frames) >= config.max_cycles:
+                    cycle_limit_reached = True
+                    break
                 trimmed = clip_cycle_voltage_window(
                     cycle_df, cell_meta.vmax, cell_meta.vmin
                 )
@@ -643,6 +718,11 @@ def process_single_mat_file(
             if not cycle_frames:
                 errors.setdefault(
                     "cycles", "No valid cycles remained after voltage clipping"
+                )
+            elif cycle_limit_reached:
+                errors.setdefault(
+                    "cycles",
+                    f"Reached maximum cycle limit of {config.max_cycles}; remaining cycles were skipped",
                 )
 
     agg_df = (
@@ -733,4 +813,4 @@ def main(config: Optional[ProcessingConfig] = None) -> None:
 if __name__ == "__main__":
     main()
     
-# Total processing time: 00:02:14
+# Total processing time: 00:00:54

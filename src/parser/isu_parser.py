@@ -24,7 +24,7 @@ class ProcessingConfig:
     chemistry: str = "NMC"
     sample_points: int = 100
     thread_count: int = 10
-    max_cycles_per_battery: int = 100
+    max_cycles: int = 100
 
     def get_raw_data_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -47,6 +47,9 @@ class CellMetadata:
     c_rate_discharge: float
     temperature: float
     dod: float
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 def load_cycling_json(file_path: str) -> Dict:
@@ -153,6 +156,40 @@ def resample_cycle_segment(segment_df: pd.DataFrame, sample_points: int) -> pd.D
     return result
 
 
+def prepare_cycle_segment(
+    segment: Optional[pd.DataFrame],
+    min_samples: int,
+) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """Validate a raw segment and enforce minimum sample requirements."""
+
+    if segment is None or segment.empty:
+        return None, "missing segment data"
+
+    required_cols = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+    missing_cols = [col for col in required_cols if col not in segment.columns]
+    if missing_cols:
+        return None, f"missing columns: {', '.join(missing_cols)}"
+
+    sanitized = segment.copy()
+    for col in required_cols:
+        sanitized[col] = pd.to_numeric(sanitized[col], errors="coerce")
+
+    sanitized = sanitized.dropna()
+    if sanitized.empty:
+        return None, "segment contains no valid samples"
+
+    sanitized = sanitized.drop_duplicates(subset=["Test_Time(s)"])
+    sanitized = sanitized.sort_values("Test_Time(s)").reset_index(drop=True)
+
+    if len(sanitized) < min_samples:
+        return None, f"segment has fewer than {min_samples} samples"
+
+    if sanitized["Test_Time(s)"].iloc[-1] <= sanitized["Test_Time(s)"].iloc[0]:
+        return None, "segment duration is non-positive"
+
+    return sanitized, None
+
+
 def format_resampled_segment(
     resampled: pd.DataFrame,
     battery_id: str,
@@ -229,11 +266,12 @@ def parse_cycles_to_resampled(
 
     num_charge_cycles = len(charge_dict.get("t", []))
     num_discharge_cycles = len(discharge_dict.get("t", []))
+
     requested_cycles = max(num_charge_cycles, num_discharge_cycles)
-    if requested_cycles > config.max_cycles_per_battery:
-        for skipped_cycle in range(
-            config.max_cycles_per_battery + 1, requested_cycles + 1
-        ):
+    max_cycles_allowed = min(requested_cycles, config.max_cycles)
+
+    if requested_cycles > config.max_cycles:
+        for skipped_cycle in range(config.max_cycles + 1, requested_cycles + 1):
             errors.append(
                 {
                     "Cycle_Index": skipped_cycle,
@@ -241,88 +279,130 @@ def parse_cycles_to_resampled(
                     "Message": "skipped due to max cycle limit",
                 }
             )
-    total_cycles = min(requested_cycles, config.max_cycles_per_battery)
 
-    for idx in range(total_cycles):
-        cycle_number = idx + 1
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    valid_cycle_counter = 0
+
+    for idx in range(max_cycles_allowed):
+        cycle_position = idx + 1
+
+        charge_segment_sanitized: Optional[pd.DataFrame] = None
+        discharge_segment_sanitized: Optional[pd.DataFrame] = None
 
         if idx < num_charge_cycles:
-            segment, error = build_cycle_segment(charge_dict, idx)
-            if segment is None:
+            charge_segment_raw, build_error = build_cycle_segment(charge_dict, idx)
+            if build_error:
                 errors.append(
                     {
-                        "Cycle_Index": cycle_number,
+                        "Cycle_Index": cycle_position,
                         "Direction": "charge",
-                        "Message": error or "unable to build segment",
+                        "Message": build_error,
                     }
                 )
             else:
-                resampled = resample_cycle_segment(segment, config.sample_points)
-                if resampled.empty:
+                charge_segment_sanitized, sanitize_error = prepare_cycle_segment(
+                    charge_segment_raw, min_samples_required
+                )
+                if sanitize_error:
                     errors.append(
                         {
-                            "Cycle_Index": cycle_number,
+                            "Cycle_Index": cycle_position,
                             "Direction": "charge",
-                            "Message": "resampling produced empty output",
+                            "Message": sanitize_error,
                         }
                     )
-                else:
-                    formatted = format_resampled_segment(
-                        resampled,
-                        battery_id,
-                        config.chemistry,
-                        cycle_number,
-                        cell_meta.c_rate_charge,
-                        cell_meta.temperature,
-                    )
-                    charge_segments.append(formatted)
         else:
             errors.append(
                 {
-                    "Cycle_Index": cycle_number,
+                    "Cycle_Index": cycle_position,
                     "Direction": "charge",
                     "Message": "missing charge cycle",
                 }
             )
 
         if idx < num_discharge_cycles:
-            segment, error = build_cycle_segment(discharge_dict, idx)
-            if segment is None:
+            discharge_segment_raw, build_error = build_cycle_segment(discharge_dict, idx)
+            if build_error:
                 errors.append(
                     {
-                        "Cycle_Index": cycle_number,
+                        "Cycle_Index": cycle_position,
                         "Direction": "discharge",
-                        "Message": error or "unable to build segment",
+                        "Message": build_error,
                     }
                 )
             else:
-                resampled = resample_cycle_segment(segment, config.sample_points)
-                if resampled.empty:
+                (
+                    discharge_segment_sanitized,
+                    sanitize_error,
+                ) = prepare_cycle_segment(discharge_segment_raw, min_samples_required)
+                if sanitize_error:
                     errors.append(
                         {
-                            "Cycle_Index": cycle_number,
+                            "Cycle_Index": cycle_position,
                             "Direction": "discharge",
-                            "Message": "resampling produced empty output",
+                            "Message": sanitize_error,
                         }
                     )
-                else:
-                    formatted = format_resampled_segment(
-                        resampled,
-                        battery_id,
-                        config.chemistry,
-                        cycle_number,
-                        cell_meta.c_rate_discharge,
-                        cell_meta.temperature,
-                    )
-                    discharge_segments.append(formatted)
         else:
             errors.append(
                 {
-                    "Cycle_Index": cycle_number,
+                    "Cycle_Index": cycle_position,
                     "Direction": "discharge",
                     "Message": "missing discharge cycle",
                 }
             )
+
+        if charge_segment_sanitized is None or discharge_segment_sanitized is None:
+            continue
+
+        charge_resampled = resample_cycle_segment(
+            charge_segment_sanitized, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment_sanitized, config.sample_points
+        )
+
+        if charge_resampled.empty:
+            errors.append(
+                {
+                    "Cycle_Index": cycle_position,
+                    "Direction": "charge",
+                    "Message": "resampling produced empty output",
+                }
+            )
+            continue
+
+        if discharge_resampled.empty:
+            errors.append(
+                {
+                    "Cycle_Index": cycle_position,
+                    "Direction": "discharge",
+                    "Message": "resampling produced empty output",
+                }
+            )
+            continue
+
+        valid_cycle_counter += 1
+
+        charge_formatted = format_resampled_segment(
+            charge_resampled,
+            battery_id,
+            config.chemistry,
+            valid_cycle_counter,
+            cell_meta.c_rate_charge,
+            cell_meta.temperature,
+        )
+        discharge_formatted = format_resampled_segment(
+            discharge_resampled,
+            battery_id,
+            config.chemistry,
+            valid_cycle_counter,
+            cell_meta.c_rate_discharge,
+            cell_meta.temperature,
+        )
+
+        charge_segments.append(charge_formatted)
+        discharge_segments.append(discharge_formatted)
 
     charge_df = (
         pd.concat(charge_segments, ignore_index=True)
@@ -334,6 +414,16 @@ def parse_cycles_to_resampled(
         if discharge_segments
         else pd.DataFrame(columns=columns)
     )
+
+    if not charge_df.empty:
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"]).reset_index(
+            drop=True
+        )
+
+    if not discharge_df.empty:
+        discharge_df = discharge_df.sort_values(
+            ["cycle_index", "sample_index"]
+        ).reset_index(drop=True)
 
     return charge_df, discharge_df, errors
 
@@ -500,7 +590,7 @@ if __name__ == "__main__":
     main()
 # ============================================================
 # 🎉 All ISU batteries processed successfully!
-# ⏱️  Total processing time: 00:25:35
+# ⏱️  Total processing time: 00:26:44
 # 📊 Processed 251 batteries with 10 threads
-# ⚡ Average time per battery: 6.12 seconds
+# ⚡ Average time per battery: 6.39 seconds
 # ============================================================

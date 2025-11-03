@@ -4,7 +4,7 @@
 # *.txt
 # *.xls
 # *.mat
-# *.zip 
+*.zip 
 # *.m
 *.7z
 assets/raw/**/*.csv

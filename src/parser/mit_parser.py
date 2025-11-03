@@ -24,7 +24,7 @@ class ProcessingConfig:
     chemistry: str = 'LFP'
     sample_points: int = 100
     thread_count: int = 8
-    max_cycles_per_battery: int = 100
+    max_cycles: int = 100
 
     def get_raw_data_path(self, project_root: str) -> str:
         return os.path.join(project_root, self.raw_data_rel_path)
@@ -46,6 +46,9 @@ class CellMetadata:
     c_rate_charge: float
     c_rate_discharge: float
     temperature: float
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
 
 
 def safe_float(value, default: float) -> float:
@@ -291,6 +294,41 @@ def resample_cycle_segment(segment_df: pd.DataFrame, sample_points: int) -> pd.D
     return result
 
 
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame,
+    min_samples: int,
+) -> Optional[pd.DataFrame]:
+    '''Sanitize segment data and enforce minimum raw samples.'''
+
+    required_cols = ['Test_Time(s)', 'Voltage(V)', 'Current(A)']
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    if any(col not in segment_df.columns for col in required_cols):
+        return None
+
+    sanitized = segment_df[required_cols].copy()
+
+    for col in required_cols:
+        sanitized[col] = pd.to_numeric(sanitized[col], errors='coerce')
+
+    sanitized = sanitized.dropna()
+    if sanitized.empty:
+        return None
+
+    sanitized = sanitized.drop_duplicates(subset=['Test_Time(s)'])
+    sanitized = sanitized.sort_values('Test_Time(s)')
+
+    if len(sanitized) < min_samples:
+        return None
+
+    if sanitized['Test_Time(s)'].iloc[-1] <= sanitized['Test_Time(s)'].iloc[0]:
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
 def format_resampled_segment(
     resampled: pd.DataFrame,
     battery_id: str,
@@ -347,7 +385,7 @@ def process_battery_dataframe(
     cycles = sorted(int(cycle) for cycle in pd.unique(df['Cycle_Count']))
 
     for idx, cycle in enumerate(cycles, start=1):
-        if idx > config.max_cycles_per_battery:
+        if idx > config.max_cycles:
             errors.append(
                 {
                     'Cycle_Index': cycle,
@@ -376,14 +414,23 @@ def process_battery_dataframe(
         )
         cycle_df['Test_Time(s)'] = cycle_df['Test_Time(s)'] - cycle_df['Test_Time(s)'].iloc[0]
 
-        charge_segment, discharge_segment = split_cycle_segments(cycle_df)
+        charge_segment_raw, discharge_segment_raw = split_cycle_segments(cycle_df)
 
-        if charge_segment.empty:
+        min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+
+        charge_segment = prepare_cycle_segment(
+            charge_segment_raw, min_samples_required
+        )
+        discharge_segment = prepare_cycle_segment(
+            discharge_segment_raw, min_samples_required
+        )
+
+        if charge_segment is None:
             errors.append(
                 {
                     'Cycle_Index': cycle,
                     'Direction': 'charge',
-                    'Message': 'no positive current segment',
+                    'Message': 'no positive current segment meeting sample requirement',
                 }
             )
         else:
@@ -401,18 +448,18 @@ def process_battery_dataframe(
                     resampled,
                     battery_id,
                     config.chemistry,
-                    cycle,
+                    idx,
                     cell_meta.c_rate_charge,
                     cell_meta.temperature,
                 )
                 charge_segments.append(formatted)
 
-        if discharge_segment.empty:
+        if discharge_segment is None:
             errors.append(
                 {
                     'Cycle_Index': cycle,
                     'Direction': 'discharge',
-                    'Message': 'no negative current segment',
+                    'Message': 'no negative current segment meeting sample requirement',
                 }
             )
         else:
@@ -430,7 +477,7 @@ def process_battery_dataframe(
                     resampled,
                     battery_id,
                     config.chemistry,
-                    cycle,
+                    idx,
                     cell_meta.c_rate_discharge,
                     cell_meta.temperature,
                 )
@@ -647,7 +694,7 @@ if __name__ == '__main__':
     main()
 # ============================================================
 # 🎉 MIT parsing completed!
-# ⏱️  Total processing time: 00:03:03
+# ⏱️  Total processing time: 00:03:26
 # 📊 Processed 140 source files
-# ⚡ Average time per file: 1.31 seconds
+# ⚡ Average time per file: 1.48 seconds
 # ============================================================
