@@ -40,12 +40,14 @@ def create_folder_structure(
     - processed_base_dir: path to processed_datasets (we read chemistry folders from here)
     - output_parent_dir: parent directory where continuous_model_prep will be created
     """
+    error_substr = "error_log"
     # Only consider directories inside processed_datasets (skip files and excluded names)
     base_entries = os.listdir(processed_base_dir)
     chemistry_folders = [
         folder
         for folder in base_entries
         if folder not in exclusion_list
+        and error_substr not in folder.lower()
         and os.path.isdir(os.path.join(processed_base_dir, folder))
     ]
 
@@ -70,11 +72,16 @@ def transfer_files(
     base_input_folder should be the processed_datasets path.
     base_output_folderpath should be the path to continuous_model_prep (not its parent).
     """
+    error_substr = "error_log"
     for split, file_list in train_val_test_dict.items():
         dest_dir = os.path.join(base_output_folderpath, split, chemistry)
         os.makedirs(dest_dir, exist_ok=True)
         copied = 0
         for file in file_list:
+            # Skip any files that contain "error_log" (case-insensitive)
+            if error_substr in file.lower():
+                continue
+
             # Only process csv files
             if not file.lower().endswith(".csv"):
                 continue
@@ -121,8 +128,10 @@ def transfer_files(
 def prep_train_test_split(input_folderpath, random_seed=42):
     random.seed(random_seed)
     unique_cell_ids = os.listdir(input_folderpath)
-    # remove known non-data files
-    unique_cell_ids = [cell for cell in unique_cell_ids if cell != "error_log.csv"]
+    # remove known non-data files and anything containing "error_log"
+    unique_cell_ids = [
+        cell for cell in unique_cell_ids if "error_log" not in cell.lower()
+    ]
     unique_cell_ids = [
         cell
         for cell in unique_cell_ids
@@ -183,5 +192,4 @@ if __name__ == "__main__":
     # Base dir points to processed_datasets
     base_dir = os.path.join("..", "..", "processed_datasets")
     chemistries = ["NMC", "NCA", "LFP", "LCO"]
-
     main(base_dir, chemistries)
