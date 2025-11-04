@@ -16,56 +16,28 @@ from tqdm import tqdm
 import time
 
 class BatteryDataset(Dataset):
-    def __init__(self, root_dir, transform=None, max_samples_per_class=None):
+    def __init__(self, root_dir, transform=None):
         self.root_dir = root_dir
         self.transform = transform
         self.classes = sorted(os.listdir(root_dir))
         self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
         self.images = []
         self.labels = []
-        
-        # Count images per class first
-        class_counts = {}
+
+        # Load all images from each class
         for chemistry in self.classes:
             chemistry_path = os.path.join(root_dir, chemistry)
+            if not os.path.isdir(chemistry_path):
+                continue
             png_files = [f for f in os.listdir(chemistry_path) if f.endswith('.png')]
-            class_counts[chemistry] = len(png_files)
-        
-        # Get the minimum count across classes if max_samples not specified
-        if max_samples_per_class is None:
-            max_samples_per_class = min(class_counts.values())
-        
-        print(f"Using {max_samples_per_class} samples per class in {os.path.basename(root_dir)}")
-        
-        # Load balanced number of images per class
-        for chemistry in self.classes:
-            chemistry_path = os.path.join(root_dir, chemistry)
-            png_files = [f for f in os.listdir(chemistry_path) if f.endswith('.png')]
-            
-            # Randomly sample if we have more images than max_samples_per_class
-            if len(png_files) > max_samples_per_class:
-                png_files = np.random.choice(png_files, max_samples_per_class, replace=False)
-            
             for img_name in png_files:
                 self.images.append(os.path.join(chemistry_path, img_name))
                 self.labels.append(self.class_to_idx[chemistry])
         
-        # Add more detailed printing
-        print(f"\nLoading data from {os.path.basename(root_dir)}:")
+        print(f"Loaded {len(self.images)} images from {os.path.basename(root_dir)}")
         for chemistry in self.classes:
-            chemistry_path = os.path.join(root_dir, chemistry)
-            png_files = [f for f in os.listdir(chemistry_path) if f.endswith('.png')]
-            
-            # Randomly sample if we have more images than max_samples_per_class
-            if len(png_files) > max_samples_per_class:
-                png_files = np.random.choice(png_files, max_samples_per_class, replace=False)
-            
-            num_selected = len(png_files)
-            print(f"  {chemistry}: {num_selected} images selected")
-            
-            for img_name in png_files:
-                self.images.append(os.path.join(chemistry_path, img_name))
-                self.labels.append(self.class_to_idx[chemistry])
+            count = sum([1 for lbl in self.labels if lbl == self.class_to_idx[chemistry]])
+            print(f"  {chemistry}: {count} images")
 
     def __len__(self):
         return len(self.images)
@@ -74,10 +46,10 @@ class BatteryDataset(Dataset):
         img_path = self.images[idx]
         image = Image.open(img_path).convert('RGB')
         label = self.labels[idx]
-        
+
         if self.transform:
             image = self.transform(image)
-        
+
         return image, label
 
 def train_model(model, train_loader, val_loader, criterion, optimizer, save_dir, num_epochs=10, device='cuda'):
@@ -228,93 +200,90 @@ def evaluate_model(model, test_loader, device='cuda'):
     
     return all_preds, all_labels
 
-def main(max_train_samples_per_chemistry = 20):
-    # Set paths
-    data_dir = r'C:\Users\MJone\Documents\SIADS699\processed_images\model_prep'
-    train_dir = os.path.join(data_dir, 'train')
-    val_dir = os.path.join(data_dir, 'val')
-    test_dir = os.path.join(data_dir, 'test')
-    
-    
-    # Set device
+def main():
+    start_time = time.time()  # Track runtime
+
+    # Paths for train/val/test datasets
+    base_path = os.path.join('model_prep')
+    train_dir = os.path.join(base_path, 'train')
+    val_dir   = os.path.join(base_path, 'val')
+    test_dir  = os.path.join(base_path, 'test')
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
-    # Define transforms
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
     ])
-    
-    # Create datasets with sample limit for training
-    train_dataset = BatteryDataset(train_dir, transform=transform, max_samples_per_class=max_train_samples_per_chemistry)
-    val_dataset = BatteryDataset(val_dir, transform=transform)  # No limit for validation
-    test_dataset = BatteryDataset(test_dir, transform=transform)  # No limit for testing
-    
-    # Print dataset sizes
-    print(f"\nDataset sizes:")
-    print(f"Training: {len(train_dataset)} images")
-    print(f"Validation: {len(val_dataset)} images")
-    print(f"Testing: {len(test_dataset)} images")
-    
-    # Create data loaders with appropriate batch size for small dataset
-    batch_size = 5  # smaller batch size since we only have 10 images per class
+
+    # Load datasets
+    train_dataset = BatteryDataset(train_dir, transform=transform)
+    val_dataset   = BatteryDataset(val_dir, transform=transform)
+    test_dataset  = BatteryDataset(test_dir, transform=transform)
+
+    print(f"Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
+
+    batch_size = 8
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
-    # Load pre-trained ResNet model
+    val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    # Model
     model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     num_classes = len(train_dataset.classes)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     model = model.to(device)
-    
-    # Define loss function and optimizer
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    # Define model save directory
-    save_dir = os.path.join(os.path.dirname(data_dir), 'stored_models', 'image_based_training')
+
+    save_dir = os.path.join(os.path.dirname(base_path), 'stored_models', 'image_based_training')
     os.makedirs(save_dir, exist_ok=True)
-    print(f"Model will be saved to: {save_dir}")
-    
-    # Train the model with save directory
-    model_metrics =  train_model(
-        model, train_loader, val_loader, criterion, optimizer,
-        save_dir=save_dir, num_epochs=10, device=device
-    )
 
-    train_losses = model_metrics['train_losses']
-    val_losses = model_metrics['val_losses']
-    
-    print('\nFinal Training Loss: {:.4f}'.format(train_losses[-1]))
-    print('Final Validation Loss: {:.4f}'.format(val_losses[-1]))
+    # Train
+    metrics = train_model(model, train_loader, val_loader, criterion, optimizer,
+                          save_dir=save_dir, num_epochs=10, device=device)
 
-    # Load best model for testing (update path)
+    # Load best model and evaluate
     checkpoint = torch.load(os.path.join(save_dir, 'best_model.pth'))
     model.load_state_dict(checkpoint['model_state_dict'])
-    
-    # Evaluate on test set
-    all_preds, all_labels = evaluate_model(model, test_loader, device)
-    
-    # Print classification report
+    preds, labels = evaluate_model(model, test_loader, device)
+
+    # Print classification metrics
+    report = classification_report(labels, preds, target_names=train_dataset.classes, output_dict=True)
     print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, 
-                              target_names=test_dataset.classes))
-    
-    # Plot confusion matrix
-    cm = confusion_matrix(all_labels, all_preds)
+    print(classification_report(labels, preds, target_names=train_dataset.classes))
+
+    # Print overall precision, recall, F1
+    precision = np.mean([report[cls]['precision'] for cls in train_dataset.classes])
+    recall = np.mean([report[cls]['recall'] for cls in train_dataset.classes])
+    f1 = np.mean([report[cls]['f1-score'] for cls in train_dataset.classes])
+    print(f"\nOverall Precision: {precision:.4f}")
+    print(f"Overall Recall: {recall:.4f}")
+    print(f"Overall F1-score: {f1:.4f}")
+
+    # Confusion matrix
+    cm = confusion_matrix(labels, preds)
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=test_dataset.classes,
-                yticklabels=test_dataset.classes)
+                xticklabels=train_dataset.classes,
+                yticklabels=train_dataset.classes)
     plt.title('Confusion Matrix')
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
+    cm_path = os.path.join(save_dir, 'confusion_matrix.png')
     plt.tight_layout()
-    plt.savefig('confusion_matrix.png')
+    plt.savefig(cm_path)
     plt.close()
+    print(f"Confusion matrix saved to {cm_path}")
+
+    # Total runtime
+    total_time = time.time() - start_time
+    print(f"\nTotal runtime: {total_time/60:.2f} minutes")
+
 
 if __name__ == "__main__":
-    main(max_train_samples_per_chemistry = 50)
+    main()
