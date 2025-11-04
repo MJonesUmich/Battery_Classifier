@@ -39,7 +39,6 @@ class ProcessingConfig:
                 "Ah_throughput",
                 "EFC",
                 "C_rate",
-                "SOC",
             ]
 
 
@@ -320,40 +319,25 @@ def split_charge_discharge(
             input_capacity=cell_capacity,
         )
 
-        # Check validity for SOC:
-        if (
-            output == "Valid"
-            and discharge_cycle_df["SOC"].max() - discharge_cycle_df["SOC"].min() < 10
-        ) or (
-            output == "Valid"
-            and charge_cycle_df["SOC"].max() - charge_cycle_df["SOC"].min() < 10
-        ):
-            output = "Invalid"
-            interp_charge_cycle_df = None
-            interp_discharge_cycle_df = None
-            cycle_df = None
+        # interpolate charge_cyle & discharge cycle
+        interp_charge_cycle_df = interpolate_df(charge_cycle_df)
+        interp_discharge_cycle_df = interpolate_df(discharge_cycle_df)
 
-        else:
+        # Stitch together charge and discharge
+        end_charge_time = interp_charge_cycle_df["Test_Time(s)"].iloc[-1]
+        interp_discharge_cycle_df["Test_Time(s)"] = (
+            interp_discharge_cycle_df["Test_Time(s)"] + end_charge_time
+        )
 
-            # interpolate charge_cyle & discharge cycle
-            interp_charge_cycle_df = interpolate_df(charge_cycle_df)
-            interp_discharge_cycle_df = interpolate_df(discharge_cycle_df)
-
-            # Stitch together charge and discharge
-            end_charge_time = interp_charge_cycle_df["Test_Time(s)"].iloc[-1]
-            interp_discharge_cycle_df["Test_Time(s)"] = (
-                interp_discharge_cycle_df["Test_Time(s)"] + end_charge_time
-            )
-
-            # concat to the cycle df file
-            cycle_df = pd.concat(
-                [
-                    interp_charge_cycle_df.drop(columns=["Charge_Time(s)"]),
-                    interp_discharge_cycle_df.drop(columns=["Discharge_Time(s)"]),
-                ],
-                axis=0,
-            )
-            cycle_df["Cycle_Count"] = iteration_num + 1
+        # concat to the cycle df file
+        cycle_df = pd.concat(
+            [
+                interp_charge_cycle_df.drop(columns=["Charge_Time(s)"]),
+                interp_discharge_cycle_df.drop(columns=["Discharge_Time(s)"]),
+            ],
+            axis=0,
+        )
+        cycle_df["Cycle_Count"] = iteration_num + 1
 
     else:
         interp_charge_cycle_df = None

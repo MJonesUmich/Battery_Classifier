@@ -1,126 +1,138 @@
 import os
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib
-
-matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from utils.help_function import load_meta_properties
+
+def _ensure_import_path() -> None:
+    """Ensure the project src directory is on sys.path for direct execution."""
+
+    src_dir = Path(__file__).resolve().parents[1]
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+
+
+_ensure_import_path()
 
 
 @dataclass
 class ProcessingConfig:
-    """Configuration class for TU Finland data processing."""
+    """Configuration for TU Finland aggregation workflow."""
 
-    base_data_path: str = "assets/raw_data/TU_Finland"
-    output_data_path: str = "processed_datasets"
-    output_images_path: str = "processed_images"
-    required_columns: List[str] = None
+    raw_data_rel_path: str = os.path.join("assets", "raw", "TU_Finland")
+    processed_rel_root: str = os.path.join("assets", "processed")
+    chemistries: Tuple[str, ...] = ("LFP", "NCA", "NMC")
+    sample_points: int = 100
+    current_tolerance: float = 1e-4
+    max_cycles: int = 100
 
-    def __post_init__(self):
-        if self.required_columns is None:
-            self.required_columns = [
-                "Current(A)",
-                "Voltage(V)",
-                "Test_Time(s)",
-                "Cycle_Count",
-                "Delta_Time(s)",
-                "Delta_Ah",
-                "Ah_throughput",
-                "EFC",
-                "C_rate",
-            ]
+    def get_raw_base_path(self, project_root: str) -> str:
+        return os.path.join(project_root, self.raw_data_rel_path)
+
+    def get_processed_dir(
+        self, project_root: str, chemistry: str, battery_key: Optional[str] = None
+    ) -> str:
+        base = os.path.join(project_root, self.processed_rel_root, chemistry)
+        if battery_key:
+            return os.path.join(base, battery_key)
+        return base
 
 
 @dataclass
 class CellMetadata:
-    """Cell metadata container."""
+    """Container for per-cell metadata used during aggregation."""
 
     initial_capacity: float
     c_rate: float
     temperature: float
     vmax: float
     vmin: float
+    chemistry: str
 
 
-def extract_battery_specs_from_mat(file_path, percentile=95):
-    """
-    Extract battery specifications (capacity, C-rate, voltage limits) from TU Finland .mat format
+@dataclass
+class MatFileInfo:
+    """Descriptor for a TU Finland MAT source file."""
 
-    Parameters:
-    - file_path: path to .mat file
-    - percentile: percentile to use for determining voltage limits
+    path: str
+    battery_id: str
+    chemistry: str
 
-    Returns:
-    - vmax: maximum charge voltage
-    - vmin: minimum discharge voltage
-    - capacity: estimated battery capacity in Ah
-    - c_rate: estimated C-rate
-    """
+    @property
+    def battery_key(self) -> str:
+        return self.battery_id.lower()
+
+    @property
+    def file_name(self) -> str:
+        return os.path.basename(self.path)
+
+
+MIN_SEGMENT_SAMPLE_COUNT = 100
+
+
+DEFAULT_METADATA: Dict[str, Dict[str, float]] = {
+    "LFP": {"initial_capacity": 2.5, "c_rate": 1.0, "temperature": 298.15, "vmax": 3.6, "vmin": 2.5},
+    "NCA": {"initial_capacity": 3.0, "c_rate": 1.0, "temperature": 298.15, "vmax": 4.2, "vmin": 2.7},
+    "NMC": {"initial_capacity": 3.0, "c_rate": 1.0, "temperature": 298.15, "vmax": 4.2, "vmin": 2.7},
+}
+
+
+def extract_battery_specs_from_mat(file_path: str, percentile: int = 95) -> Tuple[float, float, float, float]:
+    """Estimate voltage limits, capacity, and C-rate from a TU Finland MAT file."""
+
     mat_data = loadmat(file_path)
-    table = mat_data["table"]
+    table = mat_data.get("table")
+    if table is None:
+        raise ValueError("MAT file does not contain 'table' key")
 
-    all_voltages = []
-    charge_voltages = []
-    discharge_voltages = []
-    all_currents = []
-    charge_currents = []
+    all_voltages: List[float] = []
+    charge_voltages: List[float] = []
+    discharge_voltages: List[float] = []
+    charge_currents: List[float] = []
 
-    # Collect voltage and current data from all entries
-    for i, entry in enumerate(table[0]):
-        if len(entry[1]) > 0 and len(entry[2]) > 0:  # Has voltage and current data
-            voltage_data = entry[1][0]  # Get voltage array
-            current_data = entry[2][0]  # Get current array
+    for entry in table[0]:
+        voltage_raw = entry[1][0] if len(entry) > 1 and len(entry[1]) > 0 else np.array([])
+        current_raw = entry[2][0] if len(entry) > 2 and len(entry[2]) > 0 else np.array([])
 
-            # Add all voltages for overall range
-            all_voltages.extend(voltage_data)
-            all_currents.extend(current_data)
+        if voltage_raw.size == 0 or current_raw.size == 0:
+            continue
 
-            # Find charge and discharge portions based on current
-            non_zero_mask = np.abs(current_data) > 0.01
-            if np.any(non_zero_mask):
-                charge_mask = current_data > 0.01
-                discharge_mask = current_data < -0.01
+        all_voltages.extend(voltage_raw.tolist())
 
-                if np.any(charge_mask):
-                    charge_voltages.extend(voltage_data[charge_mask])
-                    charge_currents.extend(current_data[charge_mask])
-                if np.any(discharge_mask):
-                    discharge_voltages.extend(voltage_data[discharge_mask])
+        non_zero_mask = np.abs(current_raw) > 0.01
+        if np.any(non_zero_mask):
+            charge_mask = current_raw > 0.01
+            discharge_mask = current_raw < -0.01
 
-    if len(all_voltages) == 0:
-        # Fallback to default values
+            if np.any(charge_mask):
+                charge_voltages.extend(voltage_raw[charge_mask].tolist())
+                charge_currents.extend(current_raw[charge_mask].tolist())
+            if np.any(discharge_mask):
+                discharge_voltages.extend(voltage_raw[discharge_mask].tolist())
+
+    if not all_voltages:
         return 3.6, 2.5, 2.5, 1.0
 
-    # Extract voltage limits
-    if len(charge_voltages) > 0 and len(discharge_voltages) > 0:
-        vmax = np.percentile(charge_voltages, percentile)
-        vmin = np.percentile(discharge_voltages, 100 - percentile)
+    if charge_voltages and discharge_voltages:
+        vmax = float(np.percentile(charge_voltages, percentile))
+        vmin = float(np.percentile(discharge_voltages, 100 - percentile))
     else:
-        # Use overall voltage range with more conservative percentiles
-        vmax = np.percentile(all_voltages, 98)  # Use 98th percentile for max
-        vmin = np.percentile(all_voltages, 2)  # Use 2nd percentile for min
+        vmax = float(np.percentile(all_voltages, 98))
+        vmin = float(np.percentile(all_voltages, 2))
 
-    # Extract capacity and C-rate information
-    if len(charge_currents) > 0:
-        max_charge_current = np.max(charge_currents)
-
+    if charge_currents:
+        max_charge_current = max(charge_currents)
         if max_charge_current > 0:
-            # Estimate capacity based on voltage characteristics and current magnitude
-            if vmax > 4.0:  # High voltage battery (NCA/NMC)
+            if vmax > 4.0:
                 estimated_capacity = max(2.5, min(5.0, max_charge_current / 0.8))
-            else:  # Lower voltage battery (LFP)
+            else:
                 estimated_capacity = max(1.5, min(4.0, max_charge_current / 0.8))
-
             c_rate = 1.0
         else:
             estimated_capacity = 2.5
@@ -129,762 +141,676 @@ def extract_battery_specs_from_mat(file_path, percentile=95):
         estimated_capacity = 2.5
         c_rate = 1.0
 
-    return vmax, vmin, estimated_capacity, c_rate
+    return vmax, vmin, float(estimated_capacity), float(c_rate)
 
 
-def extract_voltage_limits_from_mat(file_path, percentile=95):
-    """
-    Extract voltage limits (vmax and vmin) from TU Finland .mat format
+def load_from_mat(file_path: str) -> pd.DataFrame:
+    """Load a TU Finland MAT file into a tidy dataframe."""
 
-    Parameters:
-    - file_path: path to .mat file
-    - percentile: percentile to use for determining voltage limits
+    mat_data = loadmat(file_path, struct_as_record=False, squeeze_me=True)
+    table = mat_data.get("table")
+    if table is None:
+        raise ValueError("MAT file does not contain 'table' key")
 
-    Returns:
-    - vmax: maximum charge voltage
-    - vmin: minimum discharge voltage
-    """
-    mat_data = loadmat(file_path)
-    table = mat_data["table"]
+    entries = np.atleast_1d(table)
+    frames: List[pd.DataFrame] = []
+    time_offset = 0.0
 
-    all_voltages = []
-    charge_voltages = []
-    discharge_voltages = []
+    for idx, entry in enumerate(entries):
+        voltage_raw = getattr(entry, "Voltage", None)
+        current_raw = getattr(entry, "Current", None)
+        temperature_raw = getattr(entry, "Temperature", None)
 
-    # Collect voltage data from all entries
-    for i, entry in enumerate(table[0]):
-        if len(entry[1]) > 0 and len(entry[2]) > 0:  # Has voltage and current data
-            voltage_data = entry[1][0]  # Get voltage array
-            current_data = entry[2][0]  # Get current array
-
-            # Add all voltages for overall range
-            all_voltages.extend(voltage_data)
-
-            # Find charge and discharge portions based on current
-            non_zero_mask = np.abs(current_data) > 0.01
-            if np.any(non_zero_mask):
-                charge_mask = current_data > 0.01
-                discharge_mask = current_data < -0.01
-
-                if np.any(charge_mask):
-                    charge_voltages.extend(voltage_data[charge_mask])
-                if np.any(discharge_mask):
-                    discharge_voltages.extend(voltage_data[discharge_mask])
-
-    if len(all_voltages) == 0:
-        # Fallback to default values
-        return 3.6, 2.5
-
-    # If we have charge/discharge data, use that for more accurate limits
-    if len(charge_voltages) > 0 and len(discharge_voltages) > 0:
-        vmax = np.percentile(charge_voltages, percentile)
-        vmin = np.percentile(discharge_voltages, 100 - percentile)
-        print(
-            f"  Extracted from charge/discharge data: vmax={vmax:.3f}V, vmin={vmin:.3f}V"
+        voltage_array = (
+            np.asarray(voltage_raw, dtype=float).ravel() if voltage_raw is not None else np.array([])
         )
-    else:
-        # Use overall voltage range with more conservative percentiles
-        vmax = np.percentile(all_voltages, 98)  # Use 98th percentile for max
-        vmin = np.percentile(all_voltages, 2)  # Use 2nd percentile for min
-        print(
-            f"  Extracted from overall voltage range: vmax={vmax:.3f}V, vmin={vmin:.3f}V"
+        current_array = (
+            np.asarray(current_raw, dtype=float).ravel() if current_raw is not None else np.array([])
+        )
+        temperature_array = (
+            np.asarray(temperature_raw, dtype=float).ravel()
+            if temperature_raw is not None
+            else np.zeros_like(voltage_array)
         )
 
-    return vmax, vmin
-
-
-def load_from_mat(file_path):
-    """
-    Load data from TU Finland .mat format
-    Structure: table -> entries with Time, Voltage, Current, Temperature, Comment
-
-    Parameters:
-    - file_path: path to the .mat file
-
-    Returns combined DataFrame for all test entries
-    """
-    mat_data = loadmat(file_path)
-    table = mat_data["table"]
-
-    all_dfs = []
-
-    for i, entry in enumerate(table[0]):
-        if len(entry[1]) > 0 and len(entry[2]) > 0:  # Has voltage and current data
-            voltage_data = entry[1][0]  # Get voltage array
-            current_data = entry[2][0]  # Get current array
-            temperature_data = (
-                entry[3][0] if len(entry[3]) > 0 else np.zeros_like(voltage_data)
-            )  # Get temperature array
-            comment = entry[4][0] if len(entry[4]) > 0 else f"Entry_{i}"  # Get comment
-
-            # Create time array (assuming uniform sampling)
-            time_data = np.arange(len(voltage_data))
-
-            # Create DataFrame for this entry
-            entry_df = pd.DataFrame(
-                {
-                    "Test_Time(s)": time_data,
-                    "Voltage(V)": voltage_data,
-                    "Current(A)": current_data,
-                    "Temperature(K)": temperature_data,
-                    "Comment": comment,
-                    "Entry_Index": i,
-                }
-            )
-
-            all_dfs.append(entry_df)
-
-    if len(all_dfs) == 0:
-        raise ValueError("No valid data found in mat file")
-
-    # Combine all entries
-    df = pd.concat(all_dfs, ignore_index=True)
-
-    return df.dropna().reset_index(drop=True)
-
-
-def get_indices(df):
-    """Extract charge and discharge indices from current data"""
-    I = df["Current(A)"]
-
-    # Set threshold to avoid 0 current jitter
-    thr = max(0.05 * np.nanmedian(np.abs(I[I != 0])), 1e-4)
-    sign3 = np.zeros_like(I, dtype=int)
-    sign3[I > thr] = 1
-    sign3[I < -thr] = -1
-
-    charge_indices, discharge_indices = [], []
-    prev = 0
-    for i, s in enumerate(sign3):
-        if s == 0:
+        if voltage_array.size == 0 or current_array.size == 0:
             continue
-        if prev == 0:
-            prev = s
-            continue
-        if s != prev:
-            if s == 1:
-                charge_indices.append(i)
-            elif s == -1:
-                discharge_indices.append(i)
-            prev = s
 
-    complexity, expected_order = check_indices(charge_indices, discharge_indices)
-    if complexity == "High":
-        # Skip this file
-        raise ValueError("Indices do not alternate correctly.")
-    else:
-        if expected_order[0] == "discharge" and len(discharge_indices) > len(
-            charge_indices
-        ):
-            discharge_indices = discharge_indices[:-1]
-        elif expected_order[0] == "charge" and len(charge_indices) > len(
-            discharge_indices
-        ):
-            charge_indices = charge_indices[:-1]
+        if temperature_array.size not in (0, voltage_array.size):
+            temperature_array = np.resize(temperature_array, voltage_array.size)
 
-    assert len(charge_indices) == len(discharge_indices)
-    return charge_indices, discharge_indices
+        time_raw = getattr(entry, "Time", None)
+        time_array: Optional[np.ndarray] = None
+        if time_raw is not None:
+            try:
+                time_candidate = np.asarray(time_raw, dtype=float).ravel()
+            except Exception:  # MATLAB opaque duration/string, fallback to indices
+                time_candidate = None
+            if time_candidate is not None and time_candidate.size == voltage_array.size:
+                time_array = time_candidate - float(time_candidate[0])
 
+        if time_array is None:
+            time_array = np.arange(voltage_array.size, dtype=float)
 
-def check_indices(charge_indices, discharge_indices):
-    """Check if charge and discharge indices alternate correctly"""
-    # Determine which starts first
-    if charge_indices[0] < discharge_indices[0]:
-        expected_order = ["charge", "discharge"]
-        combined = [(idx, "charge") for idx in charge_indices] + [
-            (idx, "discharge") for idx in discharge_indices
-        ]
-    else:
-        expected_order = ["discharge", "charge"]
-        combined = [(idx, "discharge") for idx in discharge_indices] + [
-            (idx, "charge") for idx in charge_indices
-        ]
+        global_time = time_array + time_offset
 
-    # Sort combined list by index
-    combined.sort(key=lambda x: x[0])  # Sort by index
+        frame = pd.DataFrame(
+            {
+                "Test_Time(s)": global_time,
+                "Voltage(V)": voltage_array,
+                "Current(A)": current_array,
+                "Temperature(K)": temperature_array,
+                "Entry_Index": idx,
+            }
+        )
 
-    # Check for alternating order
-    for i, (_, label) in enumerate(combined):
-        if label != expected_order[i % 2]:
-            complexity = "High"
-            return complexity, expected_order
+        frames.append(frame)
 
-    complexity = "Low"
-    return complexity, expected_order
+        if len(time_array) > 1:
+            delta = float(time_array[-1] - time_array[-2])
+            if np.isclose(delta, 0.0):
+                delta = 1.0
+        else:
+            delta = 1.0
 
+        time_offset = float(global_time[-1] + delta)
 
-def scrub_and_tag(
-    df,
-    charge_indices,
-    discharge_indices,
-    cell_initial_capacity,
-    vmax=None,
-    vmin=None,
-    tolerance=0.01,
-):
-    """Process and tag the data with cycle information"""
-    # Downsample to just between charge cycles
-    df = df.iloc[charge_indices[0] : discharge_indices[-1] + 1].reset_index(drop=True)
+    if not frames:
+        raise ValueError("No valid voltage/current pairs found in MAT file")
 
-    # Adjust charge_indices and discharge_indices to match the new DataFrame
-    adjusted_charge_indices = [i - charge_indices[0] for i in charge_indices]
-    adjusted_discharge_indices = [i - charge_indices[0] for i in discharge_indices]
-
-    # Create a new column for tagging
-    df["Cycle_Count"] = None
-
-    # Process each cycle to filter out constant voltage holds
-    filtered_cycles = []
-
-    for i, (charge_start, charge_end) in enumerate(
-        zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]), start=1
-    ):
-        # Extract cycle data (from this charge start to next charge start)
-        cycle_data = df.iloc[charge_start:charge_end].copy()
-        cycle_data["Cycle_Count"] = i
-
-        # Filter out constant voltage holds if vmax and vmin are provided
-        if vmax is not None and vmin is not None:
-            cycle_data = filter_voltage_range(cycle_data, vmax, vmin, tolerance)
-
-        if len(cycle_data) > 0:
-            filtered_cycles.append(cycle_data)
-
-    # Combine all filtered cycles
-    if filtered_cycles:
-        df = pd.concat(filtered_cycles, ignore_index=True)
-    else:
-        # Fallback to original method if no cycles were filtered
-        for i, (start, end) in enumerate(
-            zip(adjusted_charge_indices, adjusted_charge_indices[1:] + [len(df)]),
-            start=1,
-        ):
-            df.loc[start : end - 1, "Cycle_Count"] = i
-
-    # Coulomb count Ah throughput for each cycle
-    df["Delta_Time(s)"] = df["Test_Time(s)"].diff().fillna(0)
-    df["Delta_Ah"] = np.abs(df["Current(A)"]) * df["Delta_Time(s)"] / 3600
-    df["Ah_throughput"] = df["Delta_Ah"].cumsum()
-
-    # now calculate Equivalent Full Cycles (EFC) & Capacity Fade
-    df["EFC"] = df["Ah_throughput"] / cell_initial_capacity
+    df = pd.concat(frames, ignore_index=True)
+    df.dropna(subset=["Test_Time(s)", "Voltage(V)", "Current(A)"] , inplace=True)
+    df.sort_values("Test_Time(s)", inplace=True)
+    df.reset_index(drop=True, inplace=True)
     return df
 
 
-def filter_voltage_range(cycle_data, vmax, vmin, tolerance=0.01):
-    """
-    Filter cycle data to include only the voltage range between vmin and vmax,
-    excluding constant voltage holds (CV phase).
-    """
-    if len(cycle_data) == 0:
-        return cycle_data
+def compute_current_threshold(current: pd.Series, fallback: float = 1e-4) -> float:
+    """Derive a tolerance to distinguish charge and discharge segments."""
 
-    voltage = cycle_data["Voltage(V)"].values
-    current = cycle_data["Current(A)"].values
+    non_zero = np.abs(current[current != 0])
+    if len(non_zero) == 0:
+        return fallback
+    return max(0.05 * float(np.nanmedian(non_zero)), fallback)
 
-    # Find discharge start (first significant negative current)
-    discharge_start = None
-    current_threshold = (
-        0.05 * np.abs(current[np.abs(current) > 1e-6]).max()
-        if np.any(np.abs(current) > 1e-6)
-        else 0.01
-    )
 
-    for i, c in enumerate(current):
-        if c < -current_threshold:
-            discharge_start = i
+def detect_charge_discharge_cycles(
+    df: pd.DataFrame, tolerance: float
+) -> List[Tuple[int, int, int, int]]:
+    """Identify charge/discharge cycle boundaries."""
+
+    current = df["Current(A)"].to_numpy()
+    sign = np.zeros_like(current, dtype=int)
+    sign[current > tolerance] = 1
+    sign[current < -tolerance] = -1
+
+    cycles: List[Tuple[int, int, int, int]] = []
+    idx = 0
+    n = len(sign)
+
+    while idx < n:
+        while idx < n and sign[idx] <= 0:
+            idx += 1
+        if idx >= n:
             break
 
-    if discharge_start is None:
-        # No discharge found, only charge data
-        discharge_start = len(voltage)
+        charge_start = idx
+        while idx < n and sign[idx] >= 0:
+            idx += 1
+        charge_end = idx
 
-    # Process charge phase (before discharge)
-    charge_end_idx = None
+        while idx < n and sign[idx] == 0:
+            idx += 1
+        if idx >= n or sign[idx] > 0:
+            continue
+
+        discharge_start = idx
+        while idx < n and sign[idx] <= 0:
+            idx += 1
+        discharge_end = idx
+
+        if discharge_end - charge_start > 1:
+            cycles.append((charge_start, charge_end, discharge_start, discharge_end))
+
+    return cycles
+
+
+def extract_cycle_frames(df: pd.DataFrame, tolerance: float) -> List[pd.DataFrame]:
+    """Return dataframes for each detected charge/discharge cycle."""
+
+    cycles = detect_charge_discharge_cycles(df, tolerance)
+    frames: List[pd.DataFrame] = []
+
+    for charge_start, charge_end, discharge_start, discharge_end in cycles:
+        start = charge_start
+        end = discharge_end
+        if end - start <= 1:
+            continue
+        frames.append(df.iloc[start:end].reset_index(drop=True))
+
+    return frames
+
+
+def clip_cycle_voltage_window(
+    cycle_df: pd.DataFrame, vmax: Optional[float], vmin: Optional[float], tolerance: float = 0.01
+) -> pd.DataFrame:
+    """Clip a cycle to the provided voltage window, excluding CV holds when possible."""
+
+    if cycle_df.empty or vmax is None or vmin is None:
+        return cycle_df.reset_index(drop=True)
+
+    voltage = cycle_df["Voltage(V)"].to_numpy()
+    current = cycle_df["Current(A)"].to_numpy()
+
+    current_samples = np.abs(current[np.abs(current) > 1e-6])
+    if current_samples.size:
+        current_threshold = max(0.05 * float(np.nanmedian(current_samples)), tolerance)
+    else:
+        current_threshold = tolerance
+
+    discharge_start = None
+    for idx, value in enumerate(current):
+        if value < -current_threshold:
+            discharge_start = idx
+            break
+    if discharge_start is None:
+        discharge_start = len(cycle_df)
+
+    charge_end_idx = discharge_start
     if discharge_start > 0:
         charge_voltage = voltage[:discharge_start]
         charge_current = current[:discharge_start]
 
-        # Find where voltage first reaches vmax
         vmax_first = None
-        for i, v in enumerate(charge_voltage):
-            if v >= vmax - tolerance:
-                vmax_first = i
+        for idx, value in enumerate(charge_voltage):
+            if value >= vmax - tolerance:
+                vmax_first = idx
                 break
 
         if vmax_first is not None:
-            # Check if there's a CV hold after reaching vmax
             cv_hold_start = None
-            for i in range(vmax_first, len(charge_voltage)):
-                if i + 5 < len(charge_voltage):  # Need at least 5 points to detect CV
-                    # Check if voltage is stable near vmax
-                    voltage_stable = np.all(
-                        np.abs(charge_voltage[i : i + 5] - vmax) < tolerance
-                    )
-                    # Check if current is decreasing (CV characteristic)
-                    current_decreasing = (
-                        charge_current[i] < 0.5 * charge_current[vmax_first]
-                        if charge_current[vmax_first] > 0
-                        else False
-                    )
-
-                    if voltage_stable and current_decreasing:
-                        cv_hold_start = i
-                        break
-
-            # Set charge end: before CV hold starts, or at vmax if no clear CV hold
-            charge_end_idx = (
-                cv_hold_start if cv_hold_start is not None else vmax_first + 1
-            )
+            for idx in range(vmax_first, len(charge_voltage)):
+                if idx + 5 >= len(charge_voltage):
+                    break
+                voltage_stable = np.all(
+                    np.abs(charge_voltage[idx : idx + 5] - vmax) < tolerance
+                )
+                current_decreasing = (
+                    charge_current[idx] < 0.5 * charge_current[vmax_first]
+                    if charge_current[vmax_first] > 0
+                    else False
+                )
+                if voltage_stable and current_decreasing:
+                    cv_hold_start = idx
+                    break
+            charge_end_idx = cv_hold_start if cv_hold_start is not None else vmax_first + 1
         else:
-            # vmax not reached, use all charge data
             charge_end_idx = discharge_start
-    else:
-        charge_end_idx = 0
 
-    # Process discharge phase
-    discharge_end_idx = None
-    if discharge_start < len(voltage):
+    discharge_end_idx = len(cycle_df)
+    if discharge_start < len(cycle_df):
         discharge_voltage = voltage[discharge_start:]
-
-        # Find where voltage first reaches vmin
-        vmin_first = None
-        for i, v in enumerate(discharge_voltage):
-            if v <= vmin + tolerance:
-                vmin_first = discharge_start + i
+        for idx, value in enumerate(discharge_voltage):
+            if value <= vmin + tolerance:
+                discharge_end_idx = discharge_start + idx + 1
                 break
 
-        if vmin_first is not None:
-            discharge_end_idx = vmin_first + 1
-        else:
-            # vmin not reached, use all discharge data
-            discharge_end_idx = len(voltage)
-    else:
-        discharge_end_idx = len(voltage)
-
-    # Combine charge and discharge portions
-    filtered_indices = []
-
-    # Add charge portion (up to CV hold or vmax)
+    indices: List[int] = []
     if charge_end_idx > 0:
-        filtered_indices.extend(range(0, charge_end_idx))
-
-    # Add discharge portion (from discharge start to vmin)
+        indices.extend(range(0, min(charge_end_idx, len(cycle_df))))
     if discharge_start < discharge_end_idx:
-        filtered_indices.extend(range(discharge_start, discharge_end_idx))
+        indices.extend(range(discharge_start, min(discharge_end_idx, len(cycle_df))))
 
-    if len(filtered_indices) > 0:
-        return cycle_data.iloc[filtered_indices].reset_index(drop=True)
-    else:
-        # Fallback: return original data if filtering fails
-        return cycle_data
+    if not indices:
+        return cycle_df.reset_index(drop=True)
 
-
-def update_df(df, agg_df):
-    """Update DataFrame with aggregated data"""
-    if len(agg_df) == 0:
-        return df
-    else:
-        max_cycle = agg_df["Cycle_Count"].max()
-        df["Cycle_Count"] = df["Cycle_Count"].astype(int) + int(max_cycle)
-        df["Ah_throughput"] = df["Ah_throughput"] + agg_df["Ah_throughput"].max()
-        df["EFC"] = df["EFC"] + agg_df["EFC"].max()
-        return df
+    filtered = cycle_df.iloc[indices].copy()
+    return filtered.reset_index(drop=True)
 
 
-def parse_file(file_path, cell_initial_capacity, cell_C_rate, vmax=None, vmin=None):
-    """
-    Parse TU Finland .mat file and process battery data
+def resample_cycle_segment(segment_df: pd.DataFrame, sample_points: int) -> pd.DataFrame:
+    """Resample a charge or discharge segment to a fixed number of samples."""
 
-    Parameters:
-    - file_path: path to .mat file
-    - cell_initial_capacity: initial capacity in Ah
-    - cell_C_rate: C-rate value
-    - vmax, vmin: voltage limits for filtering
-    """
-    df = load_from_mat(file_path)
+    required = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+    if segment_df is None or segment_df.empty:
+        return pd.DataFrame()
 
-    charge_indices, discharge_indices = get_indices(df)
-    df = scrub_and_tag(
-        df, charge_indices, discharge_indices, cell_initial_capacity, vmax, vmin
+    segment = segment_df[required].dropna().copy()
+    segment.drop_duplicates(subset="Test_Time(s)", inplace=True)
+    segment.sort_values("Test_Time(s)", inplace=True)
+    if segment.empty:
+        return pd.DataFrame()
+
+    time_values = segment["Test_Time(s)"].to_numpy()
+    relative_time = time_values - time_values[0]
+
+    result = pd.DataFrame(
+        {
+            "sample_index": np.arange(sample_points, dtype=int),
+            "normalized_time": np.linspace(0.0, 1.0, sample_points),
+        }
     )
-    df["C_rate"] = cell_C_rate
-    return df
+
+    if len(segment) == 1 or np.isclose(relative_time[-1], 0.0):
+        result["elapsed_time_s"] = np.zeros(sample_points)
+        result["voltage_v"] = np.full(sample_points, segment["Voltage(V)"].iloc[0])
+        result["current_a"] = np.full(sample_points, segment["Current(A)"].iloc[0])
+        return result
+
+    normalized_time = relative_time / relative_time[-1]
+    target = result["normalized_time"].to_numpy()
+
+    result["elapsed_time_s"] = np.interp(target, normalized_time, relative_time)
+    result["voltage_v"] = np.interp(target, normalized_time, segment["Voltage(V)"].to_numpy())
+    result["current_a"] = np.interp(target, normalized_time, segment["Current(A)"].to_numpy())
+    return result
 
 
-def parse_mat_file(file_path, cell_initial_capacity, cell_C_rate, vmax=None, vmin=None):
-    """
-    Wrapper function specifically for parsing TU Finland .mat files
+def split_cycle_segments(
+    cycle_df: pd.DataFrame, tolerance: float
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a cycle dataframe into charge and discharge segments."""
 
-    Parameters:
-    - file_path: path to .mat file
-    - cell_initial_capacity: initial capacity in Ah
-    - cell_C_rate: C-rate value
-    - vmax, vmin: voltage limits for filtering
-    """
-    return parse_file(file_path, cell_initial_capacity, cell_C_rate, vmax, vmin)
+    if cycle_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    current = cycle_df["Current(A)"].to_numpy()
+    positive_indices = np.where(current > tolerance)[0]
+    negative_indices = np.where(current < -tolerance)[0]
+
+    charge_segment = pd.DataFrame()
+    discharge_segment = pd.DataFrame()
+
+    if positive_indices.size:
+        charge_start = positive_indices[0]
+        charge_end = positive_indices[-1] + 1
+        charge_segment = cycle_df.iloc[charge_start:charge_end].copy()
+
+    if negative_indices.size:
+        discharge_start = negative_indices[0]
+        discharge_end = negative_indices[-1] + 1
+        discharge_segment = cycle_df.iloc[discharge_start:discharge_end].copy()
+
+    return charge_segment, discharge_segment
 
 
-def generate_figures(
-    df: pd.DataFrame,
-    cell_meta: CellMetadata,
-    battery_ID: str,
+def prepare_cycle_segment(
+    segment_df: pd.DataFrame, min_samples: int
+) -> Optional[pd.DataFrame]:
+    """Sanitize a segment and enforce minimum sample counts."""
+
+    required = ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+
+    if segment_df is None or segment_df.empty:
+        return None
+
+    if any(column not in segment_df.columns for column in required):
+        return None
+
+    sanitized = segment_df[required].copy()
+
+    for column in required:
+        sanitized[column] = pd.to_numeric(sanitized[column], errors="coerce")
+
+    sanitized.dropna(inplace=True)
+    if sanitized.empty:
+        return None
+
+    sanitized.drop_duplicates(subset="Test_Time(s)", inplace=True)
+    sanitized.sort_values("Test_Time(s)", inplace=True)
+
+    if len(sanitized) < min_samples:
+        return None
+
+    times = sanitized["Test_Time(s)"].to_numpy()
+    if np.isclose(times[-1] - times[0], 0.0):
+        return None
+
+    return sanitized.reset_index(drop=True)
+
+
+def prepare_resampled_outputs(
+    agg_df: pd.DataFrame, cell_meta: CellMetadata, config: ProcessingConfig, battery_key: str
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Create resampled charge and discharge outputs per specification."""
+
+    columns = [
+        "battery_id",
+        "chemistry",
+        "cycle_index",
+        "sample_index",
+        "normalized_time",
+        "elapsed_time_s",
+        "voltage_v",
+        "current_a",
+        "c_rate",
+        "temperature_k",
+    ]
+
+    if agg_df.empty or "cycle_index" not in agg_df.columns:
+        empty = pd.DataFrame(columns=columns)
+        return empty.copy(), empty.copy()
+
+    charge_segments: List[pd.DataFrame] = []
+    discharge_segments: List[pd.DataFrame] = []
+
+    unique_cycles = sorted(int(c) for c in agg_df["cycle_index"].dropna().unique())
+    min_samples_required = max(config.sample_points, MIN_SEGMENT_SAMPLE_COUNT)
+    max_cycles = max(1, int(config.max_cycles))
+    valid_cycle_count = 0
+
+    for cycle in unique_cycles:
+        if valid_cycle_count >= max_cycles:
+            break
+
+        cycle_df = agg_df[agg_df["cycle_index"] == cycle].copy()
+        if cycle_df.empty:
+            continue
+
+        charge_segment_raw, discharge_segment_raw = split_cycle_segments(
+            cycle_df, tolerance=config.current_tolerance
+        )
+
+        charge_segment = prepare_cycle_segment(
+            charge_segment_raw, min_samples_required
+        )
+        discharge_segment = prepare_cycle_segment(
+            discharge_segment_raw, min_samples_required
+        )
+
+        if charge_segment is None or discharge_segment is None:
+            continue
+
+        charge_resampled = resample_cycle_segment(
+            charge_segment, config.sample_points
+        )
+        discharge_resampled = resample_cycle_segment(
+            discharge_segment, config.sample_points
+        )
+
+        if charge_resampled.empty or discharge_resampled.empty:
+            continue
+
+        valid_cycle_count += 1
+
+        for label, resampled in (
+            ("charge", charge_resampled),
+            ("discharge", discharge_resampled),
+        ):
+            formatted = resampled.copy()
+            formatted["battery_id"] = battery_key
+            formatted["chemistry"] = cell_meta.chemistry
+            formatted["cycle_index"] = valid_cycle_count
+            formatted["c_rate"] = cell_meta.c_rate
+            formatted["temperature_k"] = cell_meta.temperature
+            formatted = formatted[columns]
+
+            if label == "charge":
+                charge_segments.append(formatted)
+            else:
+                discharge_segments.append(formatted)
+
+    empty_df = pd.DataFrame(columns=columns)
+
+    if charge_segments:
+        charge_df = pd.concat(charge_segments, ignore_index=True)
+        charge_df = charge_df.sort_values(["cycle_index", "sample_index"])
+        charge_df = charge_df.reset_index(drop=True)
+    else:
+        charge_df = empty_df.copy()
+
+    if discharge_segments:
+        discharge_df = pd.concat(discharge_segments, ignore_index=True)
+        discharge_df = discharge_df.sort_values(["cycle_index", "sample_index"])
+        discharge_df = discharge_df.reset_index(drop=True)
+    else:
+        discharge_df = empty_df.copy()
+
+    return charge_df, discharge_df
+
+
+def save_processed_data(
+    charge_df: pd.DataFrame,
+    discharge_df: pd.DataFrame,
     output_dir: str,
-    tolerance=0.01,
-):
-    """Generate charge and discharge profile figures following matplotlib standards."""
-    # Create battery-specific subdirectory
-    battery_images_path = os.path.join(output_dir, battery_ID)
-    os.makedirs(battery_images_path, exist_ok=True)
+    battery_key: str,
+) -> Tuple[str, str]:
+    """Persist charge and discharge aggregates to CSV files."""
 
-    unique_cycles = df["Cycle_Count"].unique()
+    os.makedirs(output_dir, exist_ok=True)
 
-    for i, cycle in enumerate(unique_cycles):
-        cycle_df = df[df["Cycle_Count"] == cycle].reset_index(drop=True)
+    charge_path = os.path.join(output_dir, f"{battery_key}_charge_aggregated_data.csv")
+    discharge_path = os.path.join(
+        output_dir, f"{battery_key}_discharge_aggregated_data.csv"
+    )
 
-        # Find key indices
-        try:
-            vmax_idx = cycle_df[
-                cycle_df["Voltage(V)"] >= cell_meta.vmax - tolerance
-            ].index[0]
-        except IndexError:
-            vmax_idx = cycle_df["Voltage(V)"].idxmax()
-
-        try:
-            vmin_idx = cycle_df[
-                cycle_df["Voltage(V)"] <= cell_meta.vmin + tolerance
-            ].index[0]
-        except IndexError:
-            vmin_idx = cycle_df["Voltage(V)"].idxmin()
-
-        try:
-            disch_start = cycle_df[cycle_df["Current(A)"] < -tolerance].index[0]
-        except IndexError:
-            # Try with a smaller threshold if no discharge found
-            try:
-                disch_start = cycle_df[cycle_df["Current(A)"] < 0].index[0]
-            except IndexError:
-                disch_start = len(cycle_df)
-
-        # Clip charge data
-        charge_cycle_df = cycle_df.loc[0:vmax_idx].copy()
-
-        # Clip discharge data
-        if disch_start < len(cycle_df):
-            discharge_portion = cycle_df.loc[disch_start:]
-            try:
-                vmin_idx_adjusted = discharge_portion[
-                    discharge_portion["Voltage(V)"] <= cell_meta.vmin + tolerance
-                ].index[0]
-            except IndexError:
-                vmin_idx_adjusted = discharge_portion.index[-1]
-
-            discharge_cycle_df = cycle_df.loc[disch_start:vmin_idx_adjusted].copy()
-        else:
-            discharge_cycle_df = pd.DataFrame()
-
-        # Generate charge plot
-        if len(charge_cycle_df) > 0:
-            charge_cycle_df["Charge_Time(s)"] = (
-                charge_cycle_df["Test_Time(s)"]
-                - charge_cycle_df["Test_Time(s)"].iloc[0]
-            )
-
-            fig = plt.figure(figsize=(10, 6))
-            plt.plot(
-                charge_cycle_df["Charge_Time(s)"],
-                charge_cycle_df["Voltage(V)"],
-                "b-",
-                linewidth=2,
-            )
-            plt.xlabel("Charge Time (s)", fontsize=12)
-            plt.ylabel("Voltage (V)", fontsize=12)
-            plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
-            plt.grid(True, alpha=0.3)
-            save_string = f"Cycle_{i+1}_charge_Crate_{cell_meta.c_rate}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(battery_images_path, save_string)
-            plt.savefig(save_path, dpi=100, bbox_inches="tight")
-            plt.close(fig)
-
-        # Generate discharge plot
-        if len(discharge_cycle_df) > 0:
-            discharge_cycle_df["Discharge_Time(s)"] = (
-                discharge_cycle_df["Test_Time(s)"]
-                - discharge_cycle_df["Test_Time(s)"].iloc[0]
-            )
-
-            fig = plt.figure(figsize=(10, 6))
-            plt.plot(
-                discharge_cycle_df["Discharge_Time(s)"],
-                discharge_cycle_df["Voltage(V)"],
-                "r-",
-                linewidth=2,
-            )
-            plt.xlabel("Discharge Time (s)", fontsize=12)
-            plt.ylabel("Voltage (V)", fontsize=12)
-            plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
-            plt.grid(True, alpha=0.3)
-            save_string = f"Cycle_{i+1}_discharge_Crate_{cell_meta.c_rate}_tempK_{cell_meta.temperature}_batteryID_{battery_ID}.png"
-            save_path = os.path.join(battery_images_path, save_string)
-            plt.savefig(save_path, dpi=100, bbox_inches="tight")
-            plt.close(fig)
+    charge_df.to_csv(charge_path, index=False)
+    discharge_df.to_csv(discharge_path, index=False)
+    return charge_path, discharge_path
 
 
-def get_cell_metadata_from_file(file_path: str, battery_type: str) -> CellMetadata:
-    """Extract cell metadata from .mat file."""
+def save_error_log(error_dict: Dict[str, str], output_dir: str, battery_key: str) -> None:
+    """Write an error log CSV for a specific battery when issues occur."""
+
+    error_path = os.path.join(output_dir, f"error_log_{battery_key}.csv")
+
+    if not error_dict:
+        if os.path.exists(error_path):
+            os.remove(error_path)
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    error_df = pd.DataFrame(
+        list(error_dict.items()), columns=["stage", "error_message"]
+    )
+    error_df.to_csv(error_path, index=False)
+
+
+def get_cell_metadata_from_file(
+    file_path: str, battery_type: str
+) -> Tuple[CellMetadata, Optional[str]]:
+    """Extract metadata from a MAT file, falling back to chemistry defaults if needed."""
+
+    chemistry = battery_type.upper()
+    defaults = DEFAULT_METADATA.get(chemistry, DEFAULT_METADATA["LFP"])
+
     try:
         vmax, vmin, capacity, c_rate = extract_battery_specs_from_mat(
             file_path, percentile=95
         )
-        temperature = 298.15  # Default temperature for TU Finland
-
-        return CellMetadata(
+        metadata = CellMetadata(
             initial_capacity=capacity,
             c_rate=c_rate,
-            temperature=temperature,
+            temperature=defaults["temperature"],
             vmax=vmax,
             vmin=vmin,
+            chemistry=chemistry,
         )
-    except Exception as e:
-        print(f"⚠️  Error extracting metadata, using defaults: {e}")
-        # Default values based on battery type
-        if battery_type == "LFP":
-            return CellMetadata(
-                initial_capacity=2.5, c_rate=1.0, temperature=298.15, vmax=3.6, vmin=2.5
+        return metadata, None
+    except Exception as exc:
+        metadata = CellMetadata(
+            initial_capacity=defaults["initial_capacity"],
+            c_rate=defaults["c_rate"],
+            temperature=defaults["temperature"],
+            vmax=defaults["vmax"],
+            vmin=defaults["vmin"],
+            chemistry=chemistry,
+        )
+        return metadata, f"Metadata fallback applied: {exc}"
+
+
+def discover_mat_files(chemistry_path: str, chemistry: str) -> List[MatFileInfo]:
+    """Locate MAT files for the specified chemistry."""
+
+    entries: List[MatFileInfo] = []
+    if not os.path.isdir(chemistry_path):
+        return entries
+
+    for file_name in sorted(os.listdir(chemistry_path)):
+        if not file_name.lower().endswith(".mat"):
+            continue
+        if file_name.lower().startswith("ocv"):
+            continue
+        path = os.path.join(chemistry_path, file_name)
+        entries.append(
+            MatFileInfo(
+                path=path,
+                battery_id=Path(file_name).stem,
+                chemistry=chemistry,
             )
-        elif battery_type in ["NCA", "NMC"]:
-            return CellMetadata(
-                initial_capacity=3.0, c_rate=1.0, temperature=298.15, vmax=4.2, vmin=2.7
-            )
-        else:
-            return CellMetadata(
-                initial_capacity=2.5, c_rate=1.0, temperature=298.15, vmax=3.6, vmin=2.5
-            )
+        )
+
+    return entries
 
 
 def process_single_mat_file(
-    mat_file: str,
-    battery_type: str,
-    data_dir: str,
-    config: ProcessingConfig,
+    info: MatFileInfo, project_root: str, config: ProcessingConfig
 ) -> Dict[str, str]:
-    """Process a single .mat file."""
-    error_dict = {}
+    """Process a single MAT file and persist charge/discharge aggregates."""
+
+    errors: Dict[str, str] = {}
+
+    output_dir = config.get_processed_dir(project_root, info.chemistry, info.battery_key)
+
+    cell_meta, metadata_warning = get_cell_metadata_from_file(info.path, info.chemistry)
+    if metadata_warning:
+        errors["metadata"] = metadata_warning
 
     try:
-        cell_id = mat_file.replace(".mat", "")
-        file_path = os.path.join(data_dir, mat_file)
+        raw_df = load_from_mat(info.path)
+    except Exception as exc:
+        errors["load"] = str(exc)
+        raw_df = pd.DataFrame()
 
-        print(f"\n📁 Processing: {battery_type}/{cell_id}")
-
-        # Get cell metadata from file
-        cell_meta = get_cell_metadata_from_file(file_path, battery_type)
-
-        # Parse the mat file
-        df = parse_mat_file(
-            file_path,
-            cell_meta.initial_capacity,
-            cell_meta.c_rate,
-            cell_meta.vmax,
-            cell_meta.vmin,
+    cycle_frames: List[pd.DataFrame] = []
+    if raw_df.empty:
+        errors.setdefault("cycles", "No data available after loading")
+    else:
+        threshold = max(
+            compute_current_threshold(raw_df["Current(A)"], config.current_tolerance),
+            config.current_tolerance,
         )
+        cycles = extract_cycle_frames(raw_df, threshold)
+        if not cycles:
+            errors.setdefault("cycles", "No complete charge/discharge cycles detected")
+        else:
+            cycle_limit_reached = False
+            for idx, cycle_df in enumerate(cycles, start=1):
+                if len(cycle_frames) >= config.max_cycles:
+                    cycle_limit_reached = True
+                    break
+                trimmed = clip_cycle_voltage_window(
+                    cycle_df, cell_meta.vmax, cell_meta.vmin
+                )
+                trimmed = trimmed[
+                    ["Test_Time(s)", "Voltage(V)", "Current(A)"]
+                ].dropna()
+                trimmed.drop_duplicates(subset="Test_Time(s)", inplace=True)
+                trimmed.sort_values("Test_Time(s)", inplace=True)
+                trimmed.reset_index(drop=True, inplace=True)
+                if trimmed.empty:
+                    continue
+                trimmed["cycle_index"] = idx
+                trimmed["c_rate"] = cell_meta.c_rate
+                trimmed["temperature_k"] = cell_meta.temperature
+                cycle_frames.append(trimmed)
 
-        # Select only required columns
-        available_columns = [
-            col for col in config.required_columns if col in df.columns
-        ]
-        df_filtered = df[available_columns]
+            if not cycle_frames:
+                errors.setdefault(
+                    "cycles", "No valid cycles remained after voltage clipping"
+                )
+            elif cycle_limit_reached:
+                errors.setdefault(
+                    "cycles",
+                    f"Reached maximum cycle limit of {config.max_cycles}; remaining cycles were skipped",
+                )
 
-        # Setup output paths
-        output_data_path = os.path.join(config.output_data_path, battery_type)
-        output_images_path = os.path.join(config.output_images_path, battery_type)
-        os.makedirs(output_data_path, exist_ok=True)
-        os.makedirs(output_images_path, exist_ok=True)
+    agg_df = (
+        pd.concat(cycle_frames, ignore_index=True)
+        if cycle_frames
+        else pd.DataFrame(columns=["Test_Time(s)", "Voltage(V)", "Current(A)", "cycle_index"])
+    )
 
-        # Save CSV
-        csv_filename = (
-            f"{cell_id.lower()}_{int(cell_meta.temperature)}k_aggregated_data.csv"
-        )
-        csv_path = os.path.join(output_data_path, csv_filename)
-        df_filtered.to_csv(csv_path, index=False)
-        print(f"💾 Saved: {csv_path} ({len(df_filtered)} data points)")
+    charge_df, discharge_df = prepare_resampled_outputs(
+        agg_df, cell_meta, config, info.battery_key
+    )
 
-        # Generate figures
-        try:
-            generate_figures(
-                df,
-                cell_meta,
-                cell_id,
-                output_images_path,
-            )
-            print(f"🖼️  Generated figures for {cell_id}")
-        except Exception as e:
-            print(f"⚠️  Could not generate figures for {cell_id}: {e}")
-            error_dict[f"{cell_id}_figures"] = str(e)
+    save_processed_data(charge_df, discharge_df, output_dir, info.battery_key)
+    save_error_log(errors, output_dir, info.battery_key)
 
-    except Exception as e:
-        print(f"❌ Error processing {mat_file}: {e}")
-        error_dict[mat_file] = str(e)
-
-    return error_dict
+    return errors
 
 
-def process_battery_type(
-    battery_type: str,
-    data_dir: str,
-    config: ProcessingConfig,
+def process_chemistry(
+    chemistry: str, raw_base_path: str, project_root: str, config: ProcessingConfig
 ) -> Dict[str, str]:
-    """Process all .mat files for a specific battery type."""
-    print(f"\n{'='*60}")
-    print(f"Processing TU Finland {battery_type} dataset")
-    print(f"{'='*60}")
+    """Process every MAT file for a given chemistry and return aggregated errors."""
 
-    # Get list of .mat files (exclude OCV files)
-    mat_files = [
-        f
-        for f in os.listdir(data_dir)
-        if f.endswith(".mat") and not f.startswith("OCV")
-    ]
-    print(f"📂 Found {len(mat_files)} {battery_type} .mat files")
+    chemistry_path = os.path.join(raw_base_path, chemistry)
+    mat_files = discover_mat_files(chemistry_path, chemistry)
 
-    if len(mat_files) == 0:
+    if not mat_files:
+        print(f"No MAT files found for chemistry {chemistry}")
         return {}
 
-    # Process files with threading
-    all_errors = {}
-    completed_count = 0
+    print(f"Processing chemistry {chemistry} with {len(mat_files)} files")
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_file = {
-            executor.submit(
-                process_single_mat_file, mat_file, battery_type, data_dir, config
-            ): mat_file
-            for mat_file in mat_files
-        }
+    chemistry_errors: Dict[str, str] = {}
+    for info in mat_files:
+        print(f"  Parsing {info.file_name}")
+        errors = process_single_mat_file(info, project_root, config)
+        if errors:
+            chemistry_errors[info.battery_id] = "; ".join(
+                f"{stage}: {message}" for stage, message in errors.items()
+            )
 
-        for future in as_completed(future_to_file):
-            mat_file = future_to_file[future]
-            try:
-                error_dict = future.result()
-                all_errors.update(error_dict)
-                completed_count += 1
-                print(f"✅ [{completed_count}/{len(mat_files)}] Completed: {mat_file}")
-            except Exception as e:
-                print(f"✗ Error processing {mat_file}: {str(e)}")
-                all_errors[mat_file] = str(e)
-                completed_count += 1
-
-    # Save error log if there are errors
-    if all_errors:
-        error_df = pd.DataFrame(
-            list(all_errors.items()), columns=["File_Name", "Error_Message"]
-        )
-        error_log_path = os.path.join(
-            config.output_data_path,
-            battery_type,
-            f"error_log_{battery_type.lower()}.csv",
-        )
-        os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
-        error_df.to_csv(error_log_path, index=False)
-        print(f"📝 Saved error log: {error_log_path}")
-
-    print(f"✅ {battery_type} processing complete!")
-    return all_errors
-
-
-def save_error_log(
-    all_errors: Dict[str, Dict[str, str]], config: ProcessingConfig
-) -> None:
-    """Save consolidated error log for all battery types."""
-    if not all_errors or not any(all_errors.values()):
-        return
-
-    # Flatten errors from all battery types
-    flat_errors = {}
-    for battery_type, errors in all_errors.items():
-        for file, error in errors.items():
-            flat_errors[f"{battery_type}/{file}"] = error
-
-    if flat_errors:
-        error_df = pd.DataFrame(
-            list(flat_errors.items()), columns=["File_Name", "Error_Message"]
-        )
-        error_log_path = os.path.join(
-            config.output_data_path, "error_log_tu_finland.csv"
-        )
-        os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
-        error_df.to_csv(error_log_path, index=False)
-        print(f"\n📝 Saved consolidated error log: {error_log_path}")
+    return chemistry_errors
 
 
 def main(config: Optional[ProcessingConfig] = None) -> None:
-    """Main function to process all TU Finland files with multi-threading."""
+    """Entry point for TU Finland MAT aggregation."""
+
     if config is None:
         config = ProcessingConfig()
 
-    # Start timing
     start_time = time.time()
-    print("🚀 Starting TU Finland battery data processing with 5 threads per type...")
+    print("Starting TU Finland data aggregation")
 
-    # Setup paths
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.join(script_dir, "..", "..")
-    tu_base_path = os.path.join(project_root, config.base_data_path)
+    project_root_path = Path(__file__).resolve().parents[2]
+    project_root = str(project_root_path)
 
-    # Update config paths to absolute paths
-    config.output_data_path = os.path.join(project_root, config.output_data_path)
-    config.output_images_path = os.path.join(project_root, config.output_images_path)
+    raw_base_path = config.get_raw_base_path(project_root)
 
-    # Battery type configurations
-    battery_types = ["LFP", "NCA", "NMC"]
-    all_errors = {}
+    all_errors: Dict[str, Dict[str, str]] = {}
 
-    # Process each battery type
-    for battery_type in battery_types:
-        data_dir = os.path.join(tu_base_path, battery_type)
-        if os.path.exists(data_dir):
-            try:
-                errors = process_battery_type(battery_type, data_dir, config)
-                all_errors[battery_type] = errors
-            except Exception as e:
-                print(f"❌ Error processing {battery_type}: {str(e)}")
-                all_errors[battery_type] = {"general_error": str(e)}
-        else:
-            print(f"⚠️  Directory not found: {data_dir}")
+    for chemistry in config.chemistries:
+        processed_dir = config.get_processed_dir(project_root, chemistry)
+        os.makedirs(processed_dir, exist_ok=True)
+        chemistry_errors = process_chemistry(
+            chemistry, raw_base_path, project_root, config
+        )
+        if chemistry_errors:
+            all_errors[chemistry] = chemistry_errors
 
-    # Save consolidated error log
-    save_error_log(all_errors, config)
-
-    # Calculate and display total processing time
     end_time = time.time()
     total_time = end_time - start_time
 
-    # Format time display
+    print("\nProcessing summary")
+    for chemistry in config.chemistries:
+        if chemistry in all_errors:
+            print(
+                f"  {chemistry}: {len(all_errors[chemistry])} file(s) reported issues"
+            )
+        else:
+            print(f"  {chemistry}: success")
+
     hours = int(total_time // 3600)
     minutes = int((total_time % 3600) // 60)
     seconds = int(total_time % 60)
-
-    print(f"\n{'='*60}")
-    print(f"PROCESSING SUMMARY")
-    print(f"{'='*60}")
-    for battery_type, errors in all_errors.items():
-        if errors:
-            print(f"❌ {battery_type}: {len(errors)} errors")
-        else:
-            print(f"✅ {battery_type}: SUCCESS")
-    print(f"{'='*60}")
-    print(f"🎉 All TU Finland files processed successfully!")
-    print(f"⏱️  Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
-    print(f"📊 Processed {len(battery_types)} battery types with 5 threads each")
-    print(f"{'='*60}")
+    print(f"Total processing time: {hours:02d}:{minutes:02d}:{seconds:02d}")
 
 
 if __name__ == "__main__":
     main()
-
-
-# ============================================================
-# 🎉 All TU Finland files processed successfully!
-# ⏱️  Total processing time: 00:21:08
-# 📊 Processed 3 battery types with 5 threads each
-# ============================================================
+    
+# Total processing time: 00:00:54
