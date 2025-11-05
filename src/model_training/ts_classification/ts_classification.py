@@ -1,8 +1,7 @@
-import argparse
 import glob
 import os
 from typing import List, Tuple
-
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -11,16 +10,14 @@ import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 FEATURE_COLS = [
-    "Current(A)",
-    "Voltage(V)",
-    "Test_Time(s)",
-    "Cycle_Count",
-    "Delta_Time(s)",
-    "Delta_Ah",
-    "Ah_throughput",
-    "EFC",
+    "voltage_v",
+    "normalized_time",
+    "cycle_index",
+    "c_rate",
 ]
 
 
@@ -135,14 +132,26 @@ class CNN1DModel(nn.Module):
         return x
 
 
-def train(args):
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() and args.use_cuda else "cpu"
-    )
+def train():
+    start = time.time()
+    # fixed defaults and package-local relative paths
+    BATCH_SIZE = 32
+    EPOCHS = 20
+    LR = 1e-3
+    USE_CUDA = False
+    CHECKPOINT_NAME = "ts_classifier_best.pt"
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # package-local model_prep and stored_models
+    base_dir = os.path.join(script_dir, "model_prep")
+    stored_models_dir = os.path.join(script_dir, "stored_models")
+    os.makedirs(stored_models_dir, exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
     chemistries = ["LFP", "NMC", "LCO", "NCA"]
 
     # datasets
-    train_ds = TimeSeriesDataset(args.base_dir, "train", chemistries)
+    train_ds = TimeSeriesDataset(base_dir, "train", chemistries)
     if len(train_ds) == 0:
         raise RuntimeError(
             "No training files found. Check base_dir and train folder layout."
@@ -150,14 +159,14 @@ def train(args):
     # fit scaler using train files
     train_ds.fit_scaler_from_files(train_ds.files)
     val_ds = TimeSeriesDataset(
-        args.base_dir,
+        base_dir,
         "val",
         chemistries,
         scaler=train_ds.scaler,
         encoder=train_ds.encoder,
     )
     test_ds = TimeSeriesDataset(
-        args.base_dir,
+        base_dir,
         "test",
         chemistries,
         scaler=train_ds.scaler,
@@ -169,11 +178,11 @@ def train(args):
     )
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=pad_collate
+        train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=pad_collate
     )
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=pad_collate)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, collate_fn=pad_collate)
     test_loader = DataLoader(
-        test_ds, batch_size=args.batch_size, collate_fn=pad_collate
+        test_ds, batch_size=BATCH_SIZE, collate_fn=pad_collate
     )
 
     # sample to get feature size
@@ -182,14 +191,24 @@ def train(args):
     num_classes = len(train_ds.encoder.classes_)
 
     model = CNN1DModel(num_features, num_classes).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
 
+    # prepare directory to save models and artifacts inside ts_classification/stored_models
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    stored_models_dir = os.path.join(script_dir, "stored_models")
+    os.makedirs(stored_models_dir, exist_ok=True)
+
     best_val = 0.0
-    for epoch in range(1, args.epochs + 1):
+    # metrics for plotting
+    train_losses = []
+    val_losses = []
+    val_accs = []
+
+    for epoch in range(1, EPOCHS + 1):
         model.train()
         total_loss = 0.0
-        for data, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
+        for data, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}"):
             data = data.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
@@ -204,34 +223,47 @@ def train(args):
         model.eval()
         correct = 0
         total = 0
+        val_loss_total = 0.0
         with torch.no_grad():
             for data, labels in val_loader:
                 data = data.to(device)
                 labels = labels.to(device)
                 outputs = model(data)
+                loss = criterion(outputs, labels)
+                val_loss_total += loss.item()
                 preds = torch.argmax(outputs, dim=1)
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
         val_acc = correct / total if total > 0 else 0.0
-        print(f"Epoch {epoch}: Train Loss {avg_loss:.4f}, Val Acc {val_acc:.4f}")
+        val_loss = val_loss_total / len(val_loader) if len(val_loader) > 0 else 0.0
+        print(f"Epoch {epoch}: Train Loss {avg_loss:.4f}, Val Loss {val_loss:.4f}, Val Acc {val_acc:.4f}")
+
+        # record metrics
+        train_losses.append(avg_loss)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
 
         # save best
         if val_acc > best_val:
             best_val = val_acc
+            # save checkpoint into stored_models_dir
+            ckpt_path = os.path.join(stored_models_dir, os.path.basename(CHECKPOINT_NAME))
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
                     "scaler": train_ds.scaler,
                     "encoder_classes": train_ds.encoder.classes_,
                 },
-                args.checkpoint,
+                ckpt_path,
             )
-            print(f"Saved best model to {args.checkpoint} (val acc {best_val:.4f})")
+            print(f"Saved best model to {ckpt_path} (val acc {best_val:.4f})")
 
     # final test
     model.eval()
     correct = 0
     total = 0
+    all_preds = []
+    all_labels = []
     with torch.no_grad():
         for data, labels in test_loader:
             data = data.to(device)
@@ -240,25 +272,72 @@ def train(args):
             preds = torch.argmax(outputs, dim=1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
+            all_preds.extend(preds.cpu().numpy().tolist())
+            all_labels.extend(labels.cpu().numpy().tolist())
     test_acc = correct / total if total > 0 else 0.0
     print(f"Test Accuracy: {test_acc:.4f}")
 
+    # Save training progress plot
+    try:
+        epochs_range = list(range(1, len(train_losses) + 1))
+        plt.figure(figsize=(10, 4))
+        plt.subplot(1, 2, 1)
+        plt.plot(epochs_range, train_losses, label="Train Loss")
+        plt.plot(epochs_range, val_losses, label="Val Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.title("Loss vs Epoch")
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument(
-        "--base-dir", default=r"D:\\Capstone\\Battery_Classifier\\continuous_model_prep"
-    )
-    p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--use-cuda", action="store_true")
-    p.add_argument("--checkpoint", default="ts_classifier_best.pt")
-    return p.parse_args()
+        plt.subplot(1, 2, 2)
+        plt.plot(epochs_range, val_accs, label="Val Acc")
+        plt.xlabel("Epoch")
+        plt.ylabel("Accuracy")
+        plt.legend()
+        plt.title("Validation Accuracy vs Epoch")
 
+        progress_path = os.path.join(stored_models_dir, "training_progress.png")
+        plt.tight_layout()
+        plt.savefig(progress_path)
+        plt.close()
+        print(f"Saved training progress to {progress_path}")
+    except Exception as e:
+        print(f"Failed to save training progress plot: {e}")
 
+    # Save confusion matrix
+    try:
+        from sklearn.metrics import confusion_matrix, classification_report
+
+        labels_unique = list(train_ds.encoder.classes_)
+        cm = confusion_matrix(all_labels, all_preds)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels_unique, yticklabels=labels_unique)
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title("Confusion Matrix")
+
+        cm_path = os.path.join(stored_models_dir, "confusion_matrix.png")
+        plt.tight_layout()
+        plt.savefig(cm_path)
+        plt.close()
+        print(f"Saved confusion matrix to {cm_path}")
+
+        # save classification report
+        report = classification_report(all_labels, all_preds, target_names=labels_unique, output_dict=True)
+        report_path = os.path.join(stored_models_dir, "classification_report.csv")
+        pd.DataFrame(report).to_csv(report_path)
+        print(f"Saved classification report to {report_path}")
+    except Exception as e:
+        print(f"Failed to save confusion matrix/report: {e}")
+
+    end = time.time() 
+    time_delta = np.round((end-start)/ 60,1)
+    print(f"Model Training Finished in {time_delta} minutes!")
 if __name__ == "__main__":
-    args = parse_args()
-    train(args)
+    train()
 
-# ⏱️  Total processing time: 00:34:17
+
+# ============================================================
+# 🎉 Model Training,Validation, and Test Evaluation Completed!
+# ⏱️  Total processing time: 00:05:13
+# ============================================================
