@@ -18,10 +18,30 @@ import {
 } from '@mui/material';
 import { useRef, useState } from 'react';
 import './App.css';
+import datasetSample1 from './assets/datasets/sample-dataset-1.csv';
+import datasetSample2 from './assets/datasets/sample-dataset-2.csv';
+import logo from './logo.svg';
 
 function App() {
   const fileInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState('');
+
+  const sampleDatasets = [
+    {
+      id: 'dataset1',
+      title: 'Dataset 1 · Charge Cycle',
+      size: '1 KB CSV',
+      url: datasetSample1,
+      description: 'Standard 25°C constant-current charge profile covering the full SOC ramp.',
+    },
+    {
+      id: 'dataset2',
+      title: 'Dataset 2 · Discharge Cycle',
+      size: '1 KB CSV',
+      url: datasetSample2,
+      description: '2.5 A discharge slice highlighting capacity fade and thermal rise.',
+    },
+  ];
 
   const handleSelectFile = () => {
     fileInputRef.current?.click();
@@ -37,9 +57,18 @@ function App() {
       <Container maxWidth="md" sx={{ py: { xs: 6, md: 8 } }}>
         <Stack spacing={4}>
           <Box textAlign="center">
-            <Typography variant="h3" component="h1" fontWeight={600} gutterBottom>
-              Battery Insight Studio
-            </Typography>
+            <Box
+              component="img"
+              src={logo}
+              alt="Battery Insight Studio logo"
+              sx={{
+                width: { xs: 72, sm: 84, md: 600 },
+                height: 'auto',
+                mx: 'auto',
+                mb: 2,
+              }}
+            />
+
             <Typography variant="body1" color="text.secondary">
               Upload raw operational or lab data from your batteries. The platform will
               clean the signals, train diagnostic models, and estimate the current health
@@ -100,6 +129,56 @@ function App() {
                   Trial mode processes a single asset at a time with limited retention.
                 </Typography>
               </Stack>
+
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: { xs: 2, sm: 3 },
+                  backgroundColor: 'grey.50',
+                  borderStyle: 'dashed',
+                }}
+              >
+                <Stack spacing={2}>
+                  <Typography variant="subtitle2" fontWeight={600}>
+                    Need a dataset to try?
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Grab one of the sample CSV files below if you don't have your own data yet, then come back to upload.
+                  </Typography>
+                  <Stack
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={2}
+                    sx={{ width: '100%' }}
+                  >
+                    {sampleDatasets.map((dataset) => (
+                      <Paper key={dataset.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
+                        <Stack spacing={1.5}>
+                          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              {dataset.title}
+                            </Typography>
+                            <Chip label={dataset.size} size="small" color="primary" variant="outlined" />
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary">
+                            {dataset.description}
+                          </Typography>
+                          <Button
+                            component="a"
+                            href={dataset.url}
+                            download
+                            size="small"
+                            variant="contained"
+                            color="primary"
+                            sx={{ alignSelf: 'flex-start' }}
+                          >
+                            Download CSV
+                          </Button>
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </Stack>
+              </Paper>
 
               <input
                 hidden
@@ -228,7 +307,7 @@ function App() {
                 <Button
                   variant="outlined"
                   color="primary"
-                  href="https://cal.com/batteryinsight/30min"
+                  href=""
                   target="_blank"
                   rel="noopener noreferrer"
                 >
