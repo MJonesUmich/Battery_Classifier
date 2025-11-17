@@ -1,0 +1,10 @@
+body {
+  margin: 0;
+  background-color: #f5f6fb;
+  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+}
+
+.app-root {
+  min-height: 100vh;
+  background: linear-gradient(180deg, rgba(33, 150, 243, 0.08) 0%, rgba(255, 255, 255, 0.9) 45%, #ffffff 100%);
+}

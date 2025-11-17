@@ -1,4 +1,6 @@
 *.csv
+!frontend/battery-best/src/assets/datasets/sample-dataset-1.csv
+!frontend/battery-best/src/assets/datasets/sample-dataset-2.csv
 *.png
 # *.xlsx
 # *.txt
