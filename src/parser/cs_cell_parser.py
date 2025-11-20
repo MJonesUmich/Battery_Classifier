@@ -12,6 +12,7 @@ import pandas as pd
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from utils.help_function import load_meta_properties
+from utils.voltage_clamp import clamp_voltage_column
 
 
 @dataclass
@@ -503,7 +504,9 @@ def prepare_cycle_segment(
     if len(sanitized) < min_samples:
         return None
 
-    return sanitized.reset_index(drop=True)
+    sanitized = sanitized.reset_index(drop=True)
+    clamp_voltage_column(sanitized, column="Voltage(V)")
+    return sanitized
 
 
 def prepare_resampled_outputs(

@@ -21,12 +21,14 @@ _ensure_import_path()
 
 try:
     from utils.help_function import load_meta_properties
+    from utils.voltage_clamp import clamp_voltage_column
 except ModuleNotFoundError:  # pragma: no cover - defensive fallback
     project_root = Path(__file__).resolve().parents[2]
     src_package = project_root / "src"
     if str(src_package) not in sys.path:
         sys.path.insert(0, str(src_package))
     from utils.help_function import load_meta_properties
+    from utils.voltage_clamp import clamp_voltage_column
 
 
 @dataclass
@@ -379,7 +381,9 @@ def prepare_cycle_segment(
     if np.isclose(times[-1] - times[0], 0.0):
         return None
 
-    return sanitized.reset_index(drop=True)
+    sanitized = sanitized.reset_index(drop=True)
+    clamp_voltage_column(sanitized, column="Voltage(V)")
+    return sanitized
 
 
 def prepare_resampled_outputs(

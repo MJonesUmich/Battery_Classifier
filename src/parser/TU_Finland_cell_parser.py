@@ -20,6 +20,8 @@ def _ensure_import_path() -> None:
 
 _ensure_import_path()
 
+from utils.voltage_clamp import clamp_voltage_column
+
 
 @dataclass
 class ProcessingConfig:
@@ -466,7 +468,9 @@ def prepare_cycle_segment(
     if np.isclose(times[-1] - times[0], 0.0):
         return None
 
-    return sanitized.reset_index(drop=True)
+    sanitized = sanitized.reset_index(drop=True)
+    clamp_voltage_column(sanitized, column="Voltage(V)")
+    return sanitized
 
 
 def prepare_resampled_outputs(

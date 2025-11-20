@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -6,6 +7,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.voltage_clamp import clamp_voltage_column
 
 
 @dataclass
@@ -643,7 +647,9 @@ def prepare_cycle_segment(
     if sanitized["Test_Time(s)"].iloc[-1] <= sanitized["Test_Time(s)"].iloc[0]:
         return None
 
-    return sanitized.reset_index(drop=True)
+    sanitized = sanitized.reset_index(drop=True)
+    clamp_voltage_column(sanitized, column="Voltage(V)")
+    return sanitized
 
 
 def prepare_resampled_outputs(
