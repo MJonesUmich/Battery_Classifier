@@ -31,6 +31,7 @@ The following modules under `src/parser/` must conform to this spec:
 3. For every cycle:
    - Split into charge and discharge segments using current sign (positive = charge, negative = discharge) with a small tolerance (`1e-4 A`) to filter jitter.
    - Ensure each segment has at least 100 raw samples; if either segment falls short, drop the entire cycle from the aggregated output (no interpolation to fill the gap).
+   - Before any interpolation/resampling, clamp each segment's `voltage_v` samples to the conservative production window (`3.0–3.6 V`) so both charge and discharge traces stay within the range we would accept on an unknown field cell.
    - Resample eligible segments to **exactly 100 points** using an interpolation-first pipeline:
      - Derive a normalized time axis `t_norm = (elapsed_time_s - elapsed_time_s.min()) / (elapsed_time_s.max() - elapsed_time_s.min())`.
      - Build 1D interpolants for `voltage_v`, `current_a`, and any optional continuous columns with `numpy.interp` (fallback to `scipy.interpolate.PchipInterpolator` when shape preservation is critical).
@@ -47,6 +48,7 @@ The following modules under `src/parser/` must conform to this spec:
    - `current_a`
    - `c_rate`
    - `temperature_k`
+   - Clip `voltage_v` to the shared safe range derived from the maximum of the chemistry-specific minimum voltages (currently `3.0–3.6 V`) whenever regenerating processed data from new chemistry inputs to prevent data leakage and reflect the conservative production limits for unknown cells.
 5. Do **not** generate plots or images inside the parser.
 
 ## Output Specification
