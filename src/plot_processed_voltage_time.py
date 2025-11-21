@@ -128,6 +128,7 @@ class PlotTask:
     csv_path: Path
     processed_root: Path
     output_root: Path
+    clipped_output_root: Path
 
 
 @dataclass
@@ -204,6 +205,10 @@ def resolve_paths(args: argparse.Namespace) -> Tuple[Path, Path, Path]:
     output_root = args.output_root or repo_root / "assets" / "images"
     error_root = args.error_root or repo_root / "processed_datasets"
     return processed_root.resolve(), output_root.resolve(), error_root.resolve()
+
+
+def derive_clipped_output_root(output_root: Path) -> Path:
+    return output_root.parent / f"{output_root.name}_clipped"
 
 
 def normalize_column_name(name: str) -> str:
@@ -311,17 +316,18 @@ def plot_time_voltage(
     output_path: Path,
     title: str,
     verbose: bool = False,
+    y_limits: Tuple[float, float] = (2.0, 4.3),
 ) -> None:
     fig, ax = plt.subplots()
     ax.plot(data["t"], data["voltage"], color="#1f77b4")
     ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(2.0, 4.3)
+    ax.set_ylim(*y_limits)
     ax.set_xlabel("Normalized Time (fraction)")
     ax.set_ylabel("Voltage (V)")
     ax.set_title(title)
     xticks = np.linspace(0.0, 1.0, 11)
     ax.set_xticks(xticks)
-    yticks = np.round(np.linspace(2.0, 4.3, 12), 3)
+    yticks = np.round(np.linspace(y_limits[0], y_limits[1], 12), 3)
     ax.set_yticks(yticks)
     ax.set_axisbelow(True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,11 +467,19 @@ def process_csv(task: PlotTask, verbose: bool = False) -> List[PlotResult]:
                 )
             )
             output_path = task.output_root / chemistry / battery_id / output_name
+            clipped_output_path = task.clipped_output_root / chemistry / battery_id / output_name
 
             title_parts = [part for part in [chemistry, battery_id, f"Cycle {cycle_component}", phase] if part != "unknown"]
             title = " - ".join(title_parts)
 
             plot_time_voltage(data, output_path, title, verbose=verbose)
+            plot_time_voltage(
+                data,
+                clipped_output_path,
+                title,
+                verbose=verbose,
+                y_limits=(3.0, 3.6),
+            )
 
             results.append(
                 PlotResult(
@@ -558,7 +572,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     worker_count = determine_worker_count(args.workers)
     print(f"Using {worker_count} worker process(es).")
 
-    tasks = [PlotTask(csv_path=path, processed_root=processed_root, output_root=output_root) for path in csv_files]
+    clipped_output_root = derive_clipped_output_root(output_root)
+    tasks = [
+        PlotTask(
+            csv_path=path,
+            processed_root=processed_root,
+            output_root=output_root,
+            clipped_output_root=clipped_output_root,
+        )
+        for path in csv_files
+    ]
 
     process_func = partial(process_csv, verbose=args.verbose > 0)
 
