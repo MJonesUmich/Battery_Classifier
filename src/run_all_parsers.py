@@ -2,7 +2,6 @@ import importlib
 import time
 from typing import List, Tuple
 
-
 PARSER_MODULES: List[Tuple[str, str]] = [
 	("CS Cell Parser", "parser.cs_cell_parser"),
 	("INR Cell Parser", "parser.inr_cell_parser"),
@@ -12,7 +11,7 @@ PARSER_MODULES: List[Tuple[str, str]] = [
 	("PL Cell Parser", "parser.pl_cell_parser"),
 	("Stanford Cell Parser", "parser.stanford_cell_parser"),
 	("TU Finland Cell Parser", "parser.TU_Finland_cell_parser"),
-	("NCA Dataset Parser", "parser.nca_parser"),
+	("NCA Dataset Parser", "parser.tongji_parser"),
 ]
 
 
