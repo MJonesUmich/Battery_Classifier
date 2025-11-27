@@ -2,10 +2,12 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import {
   Alert,
+  Box,
   Button,
   Chip,
   CircularProgress,
   Divider,
+  Grid,
   Paper,
   Stack,
   Typography,
@@ -67,46 +69,84 @@ const UploadPanel = ({
           ) : datasetsError ? (
             <Alert severity="warning">{datasetsError}</Alert>
           ) : sampleDatasets.length ? (
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ width: '100%' }}>
-              {sampleDatasets.map((dataset) => (
-                <Paper key={dataset.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
-                  <Stack spacing={1.5}>
-                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                      <Typography variant="subtitle2" fontWeight={600}>
-                        {dataset.title}
-                      </Typography>
-                      <Chip label={dataset.size || 'CSV'} size="small" color="primary" variant="outlined" />
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                      {dataset.description}
-                    </Typography>
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                      <Button
-                        component="a"
-                        href={dataset.url}
-                        download
-                        size="small"
-                        variant="outlined"
-                        color="primary"
-                        fullWidth
-                      >
-                        Download
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="contained"
-                        color="primary"
-                        fullWidth
-                        onClick={() => onSamplePredict(dataset)}
-                        disabled={isProcessing}
-                      >
-                        Predict Now
-                      </Button>
-                    </Stack>
-                  </Stack>
-                </Paper>
-              ))}
-            </Stack>
+            <Box sx={{ maxHeight: 400, overflowY: 'auto', pr: 1 }}>
+              <Grid container spacing={2}>
+                {sampleDatasets.map((dataset) => (
+                  <Grid item xs={6} key={dataset.id}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        height: 175,
+                        width: 200,
+                        display: 'flex',
+                        flexDirection: 'column',
+                      }}
+                    >
+                      <Stack spacing={1.5} sx={{ flexGrow: 1, overflow: 'hidden' }}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          justifyContent="space-between"
+                          sx={{ width: '100%', overflow: 'hidden' }} // Ensure container clips overflow
+                        >
+                          <Typography
+                            variant="subtitle2"
+                            fontWeight={600}
+                            sx={{
+                              flex: 1,
+                              minWidth: 0, // Critical for flex child to shrink
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                            title={dataset.title}
+                          >
+                            {dataset.title}
+                          </Typography>
+                          <Chip
+                            label={dataset.size || 'CSV'}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                            sx={{ flexShrink: 0 }}
+                          />
+                        </Stack>
+                        <Box sx={{ flexGrow: 1, overflowY: 'auto', pr: 0.5 }}>
+                          <Typography variant="body2" color="text.secondary">
+                            {dataset.description}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                      <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                        <Button
+                          component="a"
+                          href={dataset.url}
+                          download
+                          size="small"
+                          variant="outlined"
+                          color="primary"
+                          fullWidth
+                        >
+                          Download
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="primary"
+                          fullWidth
+                          onClick={() => onSamplePredict(dataset)}
+                          disabled={isProcessing}
+                        >
+                          Predict Now
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
           ) : (
             <Typography variant="body2" color="text.secondary">
               No sample datasets available. Please regenerate them via `create_demo_datasets.py`.
