@@ -17,13 +17,10 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-from prepare_logreg_dataset import (
-    build_sample_from_files,
-    scrub_values,
-)
+from prepare_logreg_dataset import build_sample_from_files, scrub_values
 
 ASSETS_DIR = Path("assets/processed")
-OUTPUT_PATH = Path("artifacts/logreg_model.json")
+OUTPUT_PATH = Path("frontend/battery-best/src/assets/logreg_model.json")
 TRAINING_COLUMN = "chemistry"
 
 

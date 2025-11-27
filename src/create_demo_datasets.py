@@ -90,6 +90,7 @@ def discover_pool() -> List[Dict[str, str]]:
             description = f"{chemistry} / {battery_dir.name} combined cycle (auto-generated)."
             entries.append(
                 {
+                    "chemistry": chemistry,
                     "label": label,
                     "title": title,
                     "description": description,
@@ -100,8 +101,37 @@ def discover_pool() -> List[Dict[str, str]]:
     return entries
 
 
-def select_sources(pool: List[Dict[str, str]], indices: List[int]) -> List[Dict[str, str]]:
-    return [pool[idx] for idx in indices]
+CHEMISTRY_PRIORITY = ["LCO", "LFP", "NCA", "NMC"]
+
+
+def pick_unique_by_chemistry(
+    pool: List[Dict[str, str]], preferred: Optional[List[str]] = None, k: int = 4
+) -> List[Dict[str, str]]:
+    buckets: Dict[str, List[Dict[str, str]]] = {}
+    for entry in pool:
+        chem = entry["chemistry"].upper()
+        buckets.setdefault(chem, []).append(entry)
+
+    selected: List[Dict[str, str]] = []
+    ordered_chems = preferred or CHEMISTRY_PRIORITY
+    for chem in ordered_chems:
+        if chem in buckets and buckets[chem]:
+            selected.append(random.choice(buckets[chem]))
+            if len(selected) == k:
+                return selected
+
+    for chem, items in buckets.items():
+        if len(selected) == k:
+            break
+        if any(choice["chemistry"].upper() == chem for choice in selected):
+            continue
+        selected.append(random.choice(items))
+
+    if len(selected) < k:
+        raise RuntimeError(
+            f"Unable to assemble {k} unique chemistries from pool (found {len(selected)})"
+        )
+    return selected
 
 
 def main(random_choices: Optional[List[int]] = None) -> None:
@@ -110,12 +140,13 @@ def main(random_choices: Optional[List[int]] = None) -> None:
     if not pool:
         raise RuntimeError(f"No valid charge/discharge pairs found under {DATA_ROOT}")
 
-    if random_choices is None:
-        count = min(4, len(pool))
-        random_choices = random.sample(range(len(pool)), count)
+    if random_choices is not None:
+        chosen = [pool[idx] for idx in random_choices if idx < len(pool)]
+    else:
+        chosen = pick_unique_by_chemistry(pool, k=min(4, len(pool)))
 
     manifest_entries = []
-    for source in select_sources(pool, random_choices):
+    for source in chosen:
         output_path = OUTPUT_DIR / f"{source['label']}.csv"
         build_demo_file(Path(source["charge"]), Path(source["discharge"]), output_path)
         size_kb = output_path.stat().st_size / 1024
@@ -139,7 +170,6 @@ def main(random_choices: Optional[List[int]] = None) -> None:
 
 
 if __name__ == "__main__":
-    random.seed(345)#1515
-    #999 lfp 全变成了nca, nmc 变成了LCO
+    random.seed(107)
     main()
 

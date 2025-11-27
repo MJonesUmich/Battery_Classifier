@@ -20,8 +20,8 @@ import {
 import Papa from 'papaparse';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import predictChemistry from './utils/logregPredict';
 import logo from './logo.svg';
+import predictChemistry from './utils/logregPredict';
 
 const REQUIRED_COLUMNS = [
   'battery_id',
@@ -37,6 +37,165 @@ const REQUIRED_COLUMNS = [
 ];
 
 const DEFAULT_SAMPLE_COUNT = 100;
+
+const VoltagePlot = ({ title, color, points = [], axisColor = '#9e9e9e' }) => {
+  const width = 350;
+  const height = 220;
+  const padding = 40;
+  const tickCount = 4;
+
+  const processedPoints = points
+    .map((point, idx) => ({
+      x: Number.isFinite(point.x) ? Number(point.x) : Number(point.sample_index ?? idx),
+      y: Number(point.y),
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+  if (!processedPoints.length) {
+    return (
+      <Box>
+        <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Not enough data to render this phase.
+        </Typography>
+      </Box>
+    );
+  }
+
+  const xValues = processedPoints.map((point) => point.x);
+  const yValues = processedPoints.map((point) => point.y);
+  const xMin = Math.min(...xValues);
+  const xMax = Math.max(...xValues);
+  const yMin = Math.min(...yValues);
+  const yMax = Math.max(...yValues);
+  const xRange = xMax - xMin || 1;
+  const yRange = yMax - yMin || 1;
+
+  const coords = processedPoints.map((point) => {
+    const svgX = padding + ((point.x - xMin) / xRange) * (width - padding * 2);
+    const svgY = height - padding - ((point.y - yMin) / yRange) * (height - padding * 2);
+    return { svgX, svgY, rawX: point.x, rawY: point.y };
+  });
+
+  const ticks = (min, max) =>
+    Array.from({ length: tickCount }, (_, idx) => min + (idx / (tickCount - 1)) * (max - min));
+  const xTicks = ticks(xMin, xMax);
+  const yTicks = ticks(yMin, yMax);
+
+  return (
+    <Box>
+      <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+        {title}
+      </Typography>
+      <Box sx={{ width: '100%', overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}>
+          <rect
+            x={padding}
+            y={padding / 2}
+            width={width - padding * 2}
+            height={height - padding * 1.5}
+            fill="#fafafa"
+            stroke="#e0e0e0"
+            rx={6}
+          />
+
+          {xTicks.map((tick) => {
+            const xPos = padding + ((tick - xMin) / xRange) * (width - padding * 2);
+            return (
+              <line
+                key={`grid-x-${tick}`}
+                x1={xPos}
+                x2={xPos}
+                y1={padding / 2}
+                y2={height - padding}
+                stroke="#eeeeee"
+                strokeDasharray="4 4"
+              />
+            );
+          })}
+          {yTicks.map((tick) => {
+            const yPos = height - padding - ((tick - yMin) / yRange) * (height - padding * 2);
+            return (
+              <line
+                key={`grid-y-${tick}`}
+                x1={padding}
+                x2={width - padding}
+                y1={yPos}
+                y2={yPos}
+                stroke="#eeeeee"
+                strokeDasharray="4 4"
+              />
+            );
+          })}
+
+          <polyline
+            points={coords.map((coord) => `${coord.svgX},${coord.svgY}`).join(' ')}
+            fill="none"
+            stroke={color}
+            strokeWidth={2.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+
+          {xTicks.map((tick) => {
+            const xPos = padding + ((tick - xMin) / xRange) * (width - padding * 2);
+            return (
+              <text
+                key={`x-${tick}`}
+                x={xPos}
+                y={height - padding + 16}
+                textAnchor="middle"
+                fill={axisColor}
+                fontSize="11"
+              >
+                {tick.toFixed(2)}
+              </text>
+            );
+          })}
+
+          {yTicks.map((tick) => {
+            const yPos = height - padding - ((tick - yMin) / yRange) * (height - padding * 2);
+            return (
+              <text
+                key={`y-${tick}`}
+                x={padding - 8}
+                y={yPos + 4}
+                textAnchor="end"
+                fill={axisColor}
+                fontSize="11"
+              >
+                {tick.toFixed(2)}
+              </text>
+            );
+          })}
+
+          <text
+            x={width / 2}
+            y={height - 4}
+            textAnchor="middle"
+            fill={axisColor}
+            fontSize="11"
+            fontWeight={600}
+          >
+            Normalized Time / Sample Index
+          </text>
+          <text
+            x={12}
+            y={padding / 2 - 6}
+            textAnchor="start"
+            fill={axisColor}
+            fontSize="11"
+            fontWeight={600}
+          >
+            Voltage (V)
+          </text>
+        </svg>
+      </Box>
+    </Box>
+  );
+};
 
 function App() {
   const fileInputRef = useRef(null);
@@ -105,6 +264,14 @@ function App() {
     }
   };
 
+  const toNumericRow = (row, fallbackIndex) => ({
+    sample_index: Number.isFinite(Number(row.sample_index)) ? Number(row.sample_index) : fallbackIndex,
+    normalized_time: Number(row.normalized_time),
+    voltage_v: Number(row.voltage_v),
+    c_rate: Number(row.c_rate),
+    temperature_k: Number(row.temperature_k),
+  });
+
   const calcStats = (rows, key) => {
     const values = rows
       .map((row) => Number(row[key]))
@@ -125,7 +292,14 @@ function App() {
 
   const summarizePhase = (rows, includeTemperature = true) => {
     ensureColumns(rows);
-    const sorted = [...rows].sort((a, b) => Number(a.sample_index) - Number(b.sample_index));
+    const numericRows = rows.map(toNumericRow);
+
+    const clippedRows = numericRows.filter(
+      (row) => Number.isFinite(row.voltage_v) && row.voltage_v >= 3.0 && row.voltage_v <= 3.6
+    );
+    const filteredRows = clippedRows.length ? clippedRows : numericRows;
+
+    const sorted = [...filteredRows].sort((a, b) => a.sample_index - b.sample_index);
     const subset =
       sorted.length > DEFAULT_SAMPLE_COUNT
         ? Array.from({ length: DEFAULT_SAMPLE_COUNT }, (_, idx) => {
@@ -137,10 +311,20 @@ function App() {
           })
         : sorted;
 
+    const statsSource = subset.length ? subset : sorted;
+
+    const points = statsSource.map((row, idx) => ({
+      x: Number.isFinite(row.normalized_time) ? row.normalized_time : row.sample_index ?? idx,
+      y: row.voltage_v,
+    }));
+
     return {
-      voltage: calcStats(subset, 'voltage_v'),
-      cRate: calcStats(subset, 'c_rate'),
-      temperature: includeTemperature ? calcStats(subset, 'temperature_k') : null,
+      stats: {
+        voltage: calcStats(statsSource, 'voltage_v'),
+        cRate: calcStats(statsSource, 'c_rate'),
+        temperature: includeTemperature ? calcStats(statsSource, 'temperature_k') : null,
+      },
+      points,
     };
   };
 
@@ -165,6 +349,30 @@ function App() {
       }
     });
     return { chargeRows, dischargeRows };
+  };
+
+  const mergePhaseSummaries = (rows, fileName, currentSummaries) => {
+    const { chargeRows, dischargeRows } = splitRowsByPhase(rows);
+    if (!chargeRows.length && !dischargeRows.length) {
+      throw new Error(`Unable to detect charge/discharge rows in ${fileName}.`);
+    }
+
+    let nextSummaries = { ...currentSummaries };
+    if (chargeRows.length) {
+      const summary = summarizePhase(chargeRows);
+      nextSummaries = {
+        ...nextSummaries,
+        charge: { stats: summary.stats, points: summary.points, fileName },
+      };
+    }
+    if (dischargeRows.length) {
+      const summary = summarizePhase(dischargeRows, false);
+      nextSummaries = {
+        ...nextSummaries,
+        discharge: { stats: summary.stats, points: summary.points, fileName },
+      };
+    }
+    return nextSummaries;
   };
 
   const buildFeatureMap = useCallback((chargeSummary, dischargeSummary) => {
@@ -219,28 +427,52 @@ function App() {
         if (!rows.length) {
           throw new Error(`File ${file.name} does not contain any rows.`);
         }
-        const { chargeRows, dischargeRows } = splitRowsByPhase(rows);
-        if (!chargeRows.length && !dischargeRows.length) {
-          throw new Error(`Unable to detect charge/discharge rows in ${file.name}.`);
-        }
-        if (chargeRows.length) {
-          updatedSummaries = {
-            ...updatedSummaries,
-            charge: { stats: summarizePhase(chargeRows), fileName: file.name },
-          };
-        }
-        if (dischargeRows.length) {
-          updatedSummaries = {
-            ...updatedSummaries,
-            discharge: { stats: summarizePhase(dischargeRows, false), fileName: file.name },
-          };
-        }
+        updatedSummaries = mergePhaseSummaries(rows, file.name, updatedSummaries);
       }
       setPhaseSummaries(updatedSummaries);
       if (updatedSummaries.charge && updatedSummaries.discharge) {
         runPrediction(updatedSummaries);
       } else {
         setStatusMessage('Upload both charge and discharge CSV files to run the prediction.');
+        setPrediction(null);
+        setProbabilities(null);
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSamplePredict = async (dataset) => {
+    if (!dataset?.url) return;
+    try {
+      setIsProcessing(true);
+      setStatusMessage(`Loading sample "${dataset.title}"...`);
+      setErrorMessage('');
+
+      const response = await fetch(dataset.url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch sample CSV (${response.status})`);
+      }
+      const text = await response.text();
+      const parsed = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: true,
+      });
+      if (parsed.errors.length) {
+        throw new Error(parsed.errors[0].message || 'Unable to parse sample CSV.');
+      }
+
+      const updatedSummaries = mergePhaseSummaries(parsed.data, dataset.file, {});
+      setPhaseSummaries(updatedSummaries);
+      setSelectedFileName(`${dataset.file} (sample)`);
+
+      if (updatedSummaries.charge && updatedSummaries.discharge) {
+        runPrediction(updatedSummaries);
+      } else {
+        setStatusMessage('Sample is missing charge or discharge data.');
         setPrediction(null);
         setProbabilities(null);
       }
@@ -274,6 +506,9 @@ function App() {
     const value = probabilities[prediction];
     return typeof value === 'number' ? value * 100 : null;
   }, [prediction, probabilities]);
+
+  const chargePoints = phaseSummaries.charge?.points || [];
+  const dischargePoints = phaseSummaries.discharge?.points || [];
 
   return (
     <Box className="app-root">
@@ -391,17 +626,29 @@ function App() {
                             <Typography variant="body2" color="text.secondary">
                               {dataset.description}
                             </Typography>
-                            <Button
-                              component="a"
-                              href={dataset.url}
-                              download
-                              size="small"
-                              variant="contained"
-                              color="primary"
-                              sx={{ alignSelf: 'flex-start' }}
-                            >
-                              Download CSV
-                            </Button>
+                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                              <Button
+                                component="a"
+                                href={dataset.url}
+                                download
+                                size="small"
+                                variant="outlined"
+                                color="primary"
+                                fullWidth
+                              >
+                                Download
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="primary"
+                                fullWidth
+                                onClick={() => handleSamplePredict(dataset)}
+                                disabled={isProcessing}
+                              >
+                                Predict Now
+                              </Button>
+                            </Stack>
                           </Stack>
                         </Paper>
                       ))}
@@ -533,6 +780,24 @@ function App() {
                     </Stack>
                   ))}
                 </Stack>
+                <Box>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={6}>
+                      <VoltagePlot
+                        title="Charge Voltage Profile"
+                        color="#1976d2"
+                        points={chargePoints}
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <VoltagePlot
+                        title="Discharge Voltage Profile"
+                        color="#ff7043"
+                        points={dischargePoints}
+                      />
+                    </Grid>
+                  </Grid>
+                </Box>
               </Stack>
             ) : (
               <Typography variant="body2" color="text.secondary">
