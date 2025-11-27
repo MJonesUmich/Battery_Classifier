@@ -2,14 +2,18 @@
 
 ## 1. 准备可下载的样例 CSV
 1. 从 `assets/raw` 中挑选 **任意两个不同化学体系** 的电池原始 CSV（charge/discharge 均可，不需要额外 API）。
-2. 使用下方脚本将原始 CSV 规整为 100 行左右的示例文件（按照 `sample_index` 取等距行，保留主要列）：
+2. 使用下方脚本将原始 CSV 规整为 100 行左右的示例文件（**按照 `sample_index` 取等距行，需要保留所有模型用到的列**）：
    ```bash
    .venv\Scripts\python.exe -c "import pandas as pd; import numpy as np; \
 from pathlib import Path; src = Path('assets/raw/LCO/Capacity_25C/charge.csv'); \
-df = pd.read_csv(src); idx = np.linspace(0, len(df)-1, 100, dtype=int); \
-df.iloc[idx].to_csv('frontend/battery-best/public/datasets/LCO_sample.csv', index=False)"
+df = pd.read_csv(src); \
+required = ['battery_id','chemistry','cycle_index','sample_index','normalized_time','elapsed_time_s','voltage_v','current_a','c_rate','temperature_k']; \
+df = df[required]; \
+idx = np.linspace(0, len(df)-1, 100, dtype=int); \
+df.iloc[idx].to_csv('frontend/battery-best/public/datasets/LCO_sample_charge.csv', index=False)"
    ```
-   - 对第二个化学体系重复上述步骤，命名为 `XXX_sample.csv`。
+   - 对放电文件或第二个化学体系重复上述步骤（命名示例：`LCO_sample_discharge.csv`、`LFP_sample_charge.csv` 等）。
+   - 如果原文件低于 100 行，可直接全部保留；关键是保持顺序并包含上述列。
 3. 在 React App 的 “Need a dataset to try?” 区域提供这两个示例文件的下载链接（引用 `public/datasets/*.csv`）。
 
 ## 2. 上传与解析（纯前端）

@@ -18,28 +18,41 @@ import {
 } from '@mui/material';
 import { useRef, useState } from 'react';
 import './App.css';
-import datasetSample1 from './assets/datasets/sample-dataset-1.csv';
-import datasetSample2 from './assets/datasets/sample-dataset-2.csv';
 import logo from './logo.svg';
 
 function App() {
   const fileInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState('');
 
+  const datasetBaseUrl = `${process.env.PUBLIC_URL || ''}/datasets`;
   const sampleDatasets = [
     {
-      id: 'dataset1',
-      title: 'Dataset 1 · Charge Cycle',
-      size: '1 KB CSV',
-      url: datasetSample1,
-      description: 'Standard 25°C constant-current charge profile covering the full SOC ramp.',
+      id: 'lco-charge',
+      title: 'LCO · Charge Cycle',
+      size: '~5 KB CSV',
+      url: `${datasetBaseUrl}/LCO_sample_charge.csv`,
+      description: '100-point constant-current charge slice from the Capacity_25C cell.',
     },
     {
-      id: 'dataset2',
-      title: 'Dataset 2 · Discharge Cycle',
-      size: '1 KB CSV',
-      url: datasetSample2,
-      description: '2.5 A discharge slice highlighting capacity fade and thermal rise.',
+      id: 'lco-discharge',
+      title: 'LCO · Discharge Cycle',
+      size: '~5 KB CSV',
+      url: `${datasetBaseUrl}/LCO_sample_discharge.csv`,
+      description: 'Matching discharge curve covering the same cycle for reference.',
+    },
+    {
+      id: 'lfp-charge',
+      title: 'LFP · Charge Cycle',
+      size: '~5 KB CSV',
+      url: `${datasetBaseUrl}/LFP_sample_charge.csv`,
+      description: 'LFP chemistry example highlighting a slower voltage ramp.',
+    },
+    {
+      id: 'lfp-discharge',
+      title: 'LFP · Discharge Cycle',
+      size: '~5 KB CSV',
+      url: `${datasetBaseUrl}/LFP_sample_discharge.csv`,
+      description: 'Companion discharge sample showcasing the flat voltage plateau.',
     },
   ];
 
