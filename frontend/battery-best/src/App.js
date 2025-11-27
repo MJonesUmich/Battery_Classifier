@@ -1,328 +1,177 @@
-import BusinessCenterIcon from '@mui/icons-material/BusinessCenter';
-import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import SupportAgentIcon from '@mui/icons-material/SupportAgent';
-import {
-  Alert,
-  Box,
-  Button,
-  Chip,
-  Container,
-  Divider,
-  Grid,
-  Link,
-  Paper,
-  Stack,
-  Typography,
-} from '@mui/material';
-import { useRef, useState } from 'react';
+import { Alert, Box, Container, Stack, Typography } from '@mui/material';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import './App.css';
-import datasetSample1 from './assets/datasets/sample-dataset-1.csv';
-import datasetSample2 from './assets/datasets/sample-dataset-2.csv';
+import EnterpriseCta from './components/EnterpriseCta';
+import HeroBanner from './components/HeroBanner';
+import HowItWorksCard from './components/HowItWorksCard';
+import PredictionPreview from './components/PredictionPreview';
+import UploadPanel from './components/UploadPanel';
+import useSampleDatasets from './hooks/useSampleDatasets';
 import logo from './logo.svg';
+import predictChemistry from './utils/logregPredict';
+import { buildFeatureMap, mergePhaseSummaries, parseCsvFile, parseCsvString } from './utils/phaseProcessing';
 
 function App() {
   const fileInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState('');
+  const [phaseSummaries, setPhaseSummaries] = useState({ charge: null, discharge: null });
+  const [prediction, setPrediction] = useState(null);
+  const [probabilities, setProbabilities] = useState(null);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const sampleDatasets = [
-    {
-      id: 'dataset1',
-      title: 'Dataset 1 · Charge Cycle',
-      size: '1 KB CSV',
-      url: datasetSample1,
-      description: 'Standard 25°C constant-current charge profile covering the full SOC ramp.',
-    },
-    {
-      id: 'dataset2',
-      title: 'Dataset 2 · Discharge Cycle',
-      size: '1 KB CSV',
-      url: datasetSample2,
-      description: '2.5 A discharge slice highlighting capacity fade and thermal rise.',
-    },
-  ];
+  const datasetBaseUrl = useMemo(() => `${process.env.PUBLIC_URL || ''}/datasets`, []);
+  const { sampleDatasets, datasetsLoading, datasetsError } = useSampleDatasets(datasetBaseUrl);
 
   const handleSelectFile = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0];
-    setSelectedFileName(file ? file.name : '');
+  const runPrediction = useCallback((summaries) => {
+      const featureMap = buildFeatureMap(summaries.charge?.stats, summaries.discharge?.stats);
+      const result = predictChemistry(featureMap);
+      setPrediction(result.label);
+      setProbabilities(result.probabilities);
+      setStatusMessage('Prediction generated using uploaded charge & discharge files.');
+      setErrorMessage('');
+  }, []);
+
+  const handleFileChange = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) {
+      return;
+    }
+    setSelectedFileName(files.map((file) => file.name).join(', '));
+    setIsProcessing(true);
+    setErrorMessage('');
+    setStatusMessage('Parsing uploaded file(s)...');
+
+    let updatedSummaries = { ...phaseSummaries };
+    try {
+      for (const file of files) {
+        const rows = await parseCsvFile(file);
+        if (!rows.length) {
+          throw new Error(`File ${file.name} does not contain any rows.`);
+        }
+        updatedSummaries = mergePhaseSummaries(rows, file.name, updatedSummaries);
+      }
+      setPhaseSummaries(updatedSummaries);
+      if (updatedSummaries.charge && updatedSummaries.discharge) {
+        runPrediction(updatedSummaries);
+      } else {
+        setStatusMessage('Upload both charge and discharge CSV files to run the prediction.');
+        setPrediction(null);
+        setProbabilities(null);
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsProcessing(false);
+    }
   };
+
+  const handleSamplePredict = async (dataset) => {
+    if (!dataset?.url) return;
+    try {
+      setIsProcessing(true);
+      setStatusMessage(`Loading sample "${dataset.title}"...`);
+      setErrorMessage('');
+
+      const response = await fetch(dataset.url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch sample CSV (${response.status})`);
+      }
+      const text = await response.text();
+      const rows = parseCsvString(text);
+
+      const updatedSummaries = mergePhaseSummaries(rows, dataset.file, {});
+      setPhaseSummaries(updatedSummaries);
+      setSelectedFileName(`${dataset.file} (sample)`);
+
+      if (updatedSummaries.charge && updatedSummaries.discharge) {
+        runPrediction(updatedSummaries);
+      } else {
+        setStatusMessage('Sample is missing charge or discharge data.');
+        setPrediction(null);
+        setProbabilities(null);
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRunModel = () => {
+    if (phaseSummaries.charge && phaseSummaries.discharge) {
+      try {
+        runPrediction(phaseSummaries);
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : String(err));
+      }
+    }
+  };
+
+  const probabilityEntries = useMemo(() => {
+    if (!probabilities) return [];
+    return Object.entries(probabilities).map(([label, value]) => ({
+      label,
+      percent: (value * 100).toFixed(2),
+    }));
+  }, [probabilities]);
+
+  const topProbability = useMemo(() => {
+    if (!prediction || !probabilities) return null;
+    const value = probabilities[prediction];
+    return typeof value === 'number' ? value * 100 : null;
+  }, [prediction, probabilities]);
+
+  const chargePoints = phaseSummaries.charge?.points || [];
+  const dischargePoints = phaseSummaries.discharge?.points || [];
 
   return (
     <Box className="app-root">
       <Container maxWidth="md" sx={{ py: { xs: 6, md: 8 } }}>
         <Stack spacing={4}>
-          <Box textAlign="center">
-            <Box
-              component="img"
-              src={logo}
-              alt="Battery Insight Studio logo"
-              sx={{
-                width: { xs: 72, sm: 84, md: 600 },
-                height: 'auto',
-                mx: 'auto',
-                mb: 2,
-              }}
-            />
-
-            <Typography variant="body1" color="text.secondary">
-              Upload raw operational or lab data from your batteries. The platform will
-              clean the signals, train diagnostic models, and estimate the current health
-              to help you evaluate fleet performance in minutes.
-            </Typography>
-            <Chip
-              label="Trial Workspace"
-              color="primary"
-              variant="outlined"
-              sx={{ mt: 2, fontWeight: 600 }}
-            />
-          </Box>
+          <HeroBanner logoSrc={logo} />
 
           <Alert severity="info" sx={{ alignItems: 'center' }}>
             <Typography variant="body2">
-              You are exploring the interactive trial experience. Once you validate the
-              workflow, switch to our managed batch update pipeline or request direct API
-              access for large-scale inference.
+              You are exploring the interactive trial experience. Once you validate the workflow, switch to our managed
+              batch update pipeline or request direct API access for large-scale inference.
             </Typography>
           </Alert>
 
-          <Paper elevation={3} sx={{ p: { xs: 3, md: 4 } }}>
-            <Stack spacing={2.5}>
-              <Stack direction="row" spacing={1.5} alignItems="flex-start">
-                <InfoOutlinedIcon color="primary" fontSize="large" />
-                <Stack spacing={0.75}>
-                  <Typography variant="h5" fontWeight={600}>
-                    How It Works
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    1. Prepare a dataset containing fields such as time, voltage, current,
-                    and temperature in CSV or XLSX format.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    2. Click the upload button below, verify the preview, and start the
-                    analysis.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    3. The model will return health index, remaining life, and other KPIs
-                    (placeholder UI in this version).
-                  </Typography>
-                </Stack>
-              </Stack>
-            </Stack>
-          </Paper>
+          <HowItWorksCard />
 
-          <Paper elevation={1} sx={{ p: { xs: 3, md: 4 } }}>
-            <Stack spacing={3}>
-              <Stack spacing={1}>
-                <Typography variant="h5" fontWeight={600}>
-                  Upload Dataset
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Supports CSV and XLSX files. Parsing and model inference run in the
-                  background and typically take 1-2 minutes.
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Trial mode processes a single asset at a time with limited retention.
-                </Typography>
-              </Stack>
+          <UploadPanel
+            fileInputRef={fileInputRef}
+            selectedFileName={selectedFileName}
+            isProcessing={isProcessing}
+            sampleDatasets={sampleDatasets}
+            datasetsLoading={datasetsLoading}
+            datasetsError={datasetsError}
+            phaseSummaries={phaseSummaries}
+            errorMessage={errorMessage}
+            statusMessage={statusMessage}
+            onSelectFile={handleSelectFile}
+            onFileChange={handleFileChange}
+            onSamplePredict={handleSamplePredict}
+            onRunModel={handleRunModel}
+            onDismissError={() => setErrorMessage('')}
+            onDismissStatus={() => setStatusMessage('')}
+          />
 
-              <Paper
-                variant="outlined"
-                sx={{
-                  p: { xs: 2, sm: 3 },
-                  backgroundColor: 'grey.50',
-                  borderStyle: 'dashed',
-                }}
-              >
-                <Stack spacing={2}>
-                  <Typography variant="subtitle2" fontWeight={600}>
-                    Need a dataset to try?
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Grab one of the sample CSV files below if you don't have your own data yet, then come back to upload.
-                  </Typography>
-                  <Stack
-                    direction={{ xs: 'column', md: 'row' }}
-                    spacing={2}
-                    sx={{ width: '100%' }}
-                  >
-                    {sampleDatasets.map((dataset) => (
-                      <Paper key={dataset.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
-                        <Stack spacing={1.5}>
-                          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                            <Typography variant="subtitle2" fontWeight={600}>
-                              {dataset.title}
-                            </Typography>
-                            <Chip label={dataset.size} size="small" color="primary" variant="outlined" />
-                          </Stack>
-                          <Typography variant="body2" color="text.secondary">
-                            {dataset.description}
-                          </Typography>
-                          <Button
-                            component="a"
-                            href={dataset.url}
-                            download
-                            size="small"
-                            variant="contained"
-                            color="primary"
-                            sx={{ alignSelf: 'flex-start' }}
-                          >
-                            Download CSV
-                          </Button>
-                        </Stack>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </Stack>
-              </Paper>
+          <PredictionPreview
+            prediction={prediction}
+            topProbability={topProbability}
+            probabilityEntries={probabilityEntries}
+            chargePoints={chargePoints}
+            dischargePoints={dischargePoints}
+          />
 
-              <input
-                hidden
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,.xls,.xlsx"
-                onChange={handleFileChange}
-              />
-
-              <Stack
-                direction={{ xs: 'column', sm: 'row' }}
-                spacing={2}
-                alignItems={{ xs: 'stretch', sm: 'center' }}
-              >
-                <Button
-                  variant="contained"
-                  startIcon={<CloudUploadIcon />}
-                  onClick={handleSelectFile}
-                  size="large"
-                >
-                  Choose File
-                </Button>
-                <Typography
-                  variant="body2"
-                  color={selectedFileName ? 'text.primary' : 'text.secondary'}
-                  sx={{ flexGrow: 1 }}
-                >
-                  {selectedFileName || 'No file selected'}
-                </Typography>
-              </Stack>
-
-              <Divider />
-
-              <Stack spacing={1.5}>
-                <Button
-                  variant="contained"
-                  color="secondary"
-                  startIcon={<PlayArrowIcon />}
-                  size="large"
-                  disabled={!selectedFileName}
-                >
-                  Run Model Analysis
-                </Button>
-                <Typography variant="caption" color="text.secondary">
-                  Model inference will run on the backend. This page is not yet connected
-                  to the processing pipeline.
-                </Typography>
-              </Stack>
-            </Stack>
-          </Paper>
-
-          <Paper
-            variant="outlined"
-            sx={{
-              p: { xs: 3, md: 4 },
-              borderStyle: 'dashed',
-              borderColor: 'primary.light',
-              backgroundColor: 'rgba(25, 118, 210, 0.04)',
-            }}
-          >
-            <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-              Prediction Preview
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Once the model integration is complete, this section will display health
-              indices, remaining life curves, and other performance insights.
-            </Typography>
-          </Paper>
-
-          <Paper elevation={0} sx={{ p: { xs: 3, md: 4 }, border: '1px solid', borderColor: 'divider' }}>
-            <Stack spacing={3}>
-              <Stack direction="row" spacing={1.5} alignItems="center">
-                <BusinessCenterIcon color="primary" fontSize="large" />
-                <Typography variant="h5" fontWeight={600}>
-                  Ready for Batch Update?
-                </Typography>
-              </Stack>
-              <Typography variant="body2" color="text.secondary">
-                Keep your production fleets synchronized with nightly batch updates,
-                automated health reports, and seamless API integration. We tailor the
-                deployment plan to your data cadence and infrastructure requirements.
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12} md={6}>
-                  <Paper variant="outlined" sx={{ p: 2.5, height: '100%' }}>
-                    <Stack spacing={1.5}>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Chip label="Batch Predict" color="primary" size="small" />
-                        <Typography variant="subtitle2" fontWeight={600}>
-                          High-volume scoring
-                        </Typography>
-                      </Stack>
-                      <Typography variant="body2" color="text.secondary">
-                        Stream ingest-ready files and receive inference results through the
-                        batch update queue or via REST endpoints with secure credentials.
-                      </Typography>
-                    </Stack>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <Paper variant="outlined" sx={{ p: 2.5, height: '100%' }}>
-                    <Stack spacing={1.5}>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Chip label="Enterprise Support" color="secondary" size="small" />
-                        <Typography variant="subtitle2" fontWeight={600}>
-                          Co-design the rollout
-                        </Typography>
-                      </Stack>
-                      <Typography variant="body2" color="text.secondary">
-                        Collaborate with our engineering team to define monitoring SLAs,
-                        deployment guardrails, and integration checkpoints tailored to your
-                        roadmap.
-                      </Typography>
-                    </Stack>
-                  </Paper>
-                </Grid>
-              </Grid>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
-                <Button
-                  variant="contained"
-                  startIcon={<SupportAgentIcon />}
-                  href="mailto:solutions@batteryinsight.ai?subject=Battery%20Insight%20Studio%20-%20Batch%20Predict"
-                >
-                  Contact Solutions Team
-                </Button>
-                <Button
-                  variant="outlined"
-                  color="primary"
-                  href=""
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Schedule a Planning Call
-                </Button>
-                <Typography variant="caption" color="text.secondary">
-                  Prefer another channel? Reach us via{' '}
-                  <Link href="https://batteryinsight.ai" target="_blank" rel="noopener noreferrer">
-                    batteryinsight.ai
-                  </Link>
-                  .
-                </Typography>
-              </Stack>
-            </Stack>
-          </Paper>
+          <EnterpriseCta />
         </Stack>
       </Container>
     </Box>
