@@ -16,19 +16,21 @@ const PredictionPreview = ({ prediction, topProbability, probabilityEntries, cha
     </Typography>
     {prediction ? (
       <Stack spacing={2}>
-        <Typography variant="h4" fontWeight={700}>
-          {prediction}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Top prediction with probability {topProbability ? topProbability.toFixed(2) : '--'}%
-        </Typography>
-        <Stack spacing={1}>
+        <Stack spacing={0.5}>
+          <Typography variant="h4" fontWeight={700}>
+            {prediction}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Top prediction with probability {topProbability ? topProbability.toFixed(2) : '--'}%
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={4} alignItems="center" sx={{ maxWidth: 400 }}>
           {probabilityEntries.map((entry) => (
-            <Stack key={entry.label} direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-              <Typography variant="body2" fontWeight={600}>
+            <Stack key={entry.label} spacing={0.5} alignItems="flex-start">
+              <Typography variant="caption" color="text.secondary" fontWeight={600}>
                 {entry.label}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" fontWeight={600}>
                 {entry.percent}%
               </Typography>
             </Stack>

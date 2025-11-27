@@ -1,6 +1,6 @@
 import BusinessCenterIcon from '@mui/icons-material/BusinessCenter';
 import SupportAgentIcon from '@mui/icons-material/SupportAgent';
-import { Button, Chip, Grid, Link, Paper, Stack, Typography } from '@mui/material';
+import { Button, Chip, Grid, Paper, Stack, Typography } from '@mui/material';
 
 const EnterpriseCta = () => (
   <Paper elevation={0} sx={{ p: { xs: 3, md: 4 }, border: '1px solid', borderColor: 'divider' }}>
@@ -53,7 +53,7 @@ const EnterpriseCta = () => (
         <Button
           variant="contained"
           startIcon={<SupportAgentIcon />}
-          href="mailto:solutions@batteryinsight.ai?subject=Battery%20Insight%20Studio%20-%20Batch%20Predict"
+ 
         >
           Contact Solutions Team
         </Button>
@@ -62,9 +62,6 @@ const EnterpriseCta = () => (
         </Button>
         <Typography variant="caption" color="text.secondary">
           Prefer another channel? Reach us via{' '}
-          <Link href="https://batteryinsight.ai" target="_blank" rel="noopener noreferrer">
-            batteryinsight.ai
-          </Link>
           .
         </Typography>
       </Stack>
