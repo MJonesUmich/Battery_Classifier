@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import random
+
+random.seed(107)
 import re
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +34,7 @@ REQUIRED_COLUMNS: List[str] = [
 ]
 
 DEFAULT_SAMPLE_COUNT = 100
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "frontend" / "battery-best" / "public" / "datasets"
 DATA_ROOT = REPO_ROOT / "assets" / "processed"
 
@@ -170,6 +172,6 @@ def main(random_choices: Optional[List[int]] = None) -> None:
 
 
 if __name__ == "__main__":
-    random.seed(107)
+    
     main()
 

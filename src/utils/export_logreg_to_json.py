@@ -10,6 +10,7 @@ logic using plain JavaScript (see README snippet in assistant response).
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -17,10 +18,15 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-from prepare_logreg_dataset import build_sample_from_files, scrub_values
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
-ASSETS_DIR = Path("assets/processed")
-OUTPUT_PATH = Path("frontend/battery-best/src/assets/logreg_model.json")
+from utils.prepare_logreg_dataset import build_sample_from_files, scrub_values
+
+ASSETS_DIR = REPO_ROOT / "assets" / "processed"
+OUTPUT_PATH = REPO_ROOT / "frontend" / "battery-best" / "src" / "assets" / "logreg_model.json"
 TRAINING_COLUMN = "chemistry"
 
 
