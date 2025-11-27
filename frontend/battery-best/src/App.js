@@ -8,6 +8,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Container,
   Divider,
   Grid,
@@ -16,13 +17,36 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import { useRef, useState } from 'react';
+import Papa from 'papaparse';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import './App.css';
+import predictChemistry from './utils/logregPredict';
 import logo from './logo.svg';
+
+const REQUIRED_COLUMNS = [
+  'battery_id',
+  'chemistry',
+  'cycle_index',
+  'sample_index',
+  'normalized_time',
+  'elapsed_time_s',
+  'voltage_v',
+  'current_a',
+  'c_rate',
+  'temperature_k',
+];
+
+const DEFAULT_SAMPLE_COUNT = 100;
 
 function App() {
   const fileInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState('');
+  const [phaseSummaries, setPhaseSummaries] = useState({ charge: null, discharge: null });
+  const [prediction, setPrediction] = useState(null);
+  const [probabilities, setProbabilities] = useState(null);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const datasetBaseUrl = `${process.env.PUBLIC_URL || ''}/datasets`;
   const sampleDatasets = [
@@ -56,14 +80,176 @@ function App() {
     },
   ];
 
+  const parseCsvFile = (file) =>
+    new Promise((resolve, reject) => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: true,
+        complete: (results) => {
+          if (results.errors.length) {
+            reject(new Error(results.errors[0].message));
+            return;
+          }
+          resolve(results.data);
+        },
+        error: (err) => reject(err),
+      });
+    });
+
+  const detectPhase = (fileName, rows) => {
+    const lower = fileName.toLowerCase();
+    if (lower.includes('discharge')) return 'discharge';
+    if (lower.includes('charge')) return 'charge';
+    const avgCurrent =
+      rows.reduce((acc, row) => acc + (Number(row.current_a) || 0), 0) / Math.max(rows.length, 1);
+    return avgCurrent < 0 ? 'discharge' : 'charge';
+  };
+
+  const ensureColumns = (rows) => {
+    const missing = REQUIRED_COLUMNS.filter((col) => !(col in (rows[0] || {})));
+    if (missing.length) {
+      throw new Error(`Missing required columns: ${missing.join(', ')}`);
+    }
+  };
+
+  const calcStats = (rows, key) => {
+    const values = rows
+      .map((row) => Number(row[key]))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) {
+      throw new Error(`Column ${key} does not contain numeric data.`);
+    }
+    const mean = values.reduce((acc, value) => acc + value, 0) / values.length;
+    const variance =
+      values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / Math.max(values.length, 1);
+    return {
+      mean,
+      std: Math.sqrt(variance),
+      min: Math.min(...values),
+      max: Math.max(...values),
+    };
+  };
+
+  const summarizePhase = (rows) => {
+    ensureColumns(rows);
+    const sorted = [...rows].sort((a, b) => Number(a.sample_index) - Number(b.sample_index));
+    const subset =
+      sorted.length > DEFAULT_SAMPLE_COUNT
+        ? Array.from({ length: DEFAULT_SAMPLE_COUNT }, (_, idx) => {
+            const pointer =
+              sorted.length === 1
+                ? 0
+                : Math.floor((idx / (DEFAULT_SAMPLE_COUNT - 1)) * (sorted.length - 1));
+            return sorted[pointer];
+          })
+        : sorted;
+
+    return {
+      voltage: calcStats(subset, 'voltage_v'),
+      cRate: calcStats(subset, 'c_rate'),
+      temperature: calcStats(subset, 'temperature_k'),
+    };
+  };
+
+  const buildFeatureMap = useCallback((chargeSummary, dischargeSummary) => {
+    if (!chargeSummary || !dischargeSummary) {
+      throw new Error('Charge and discharge datasets are both required.');
+    }
+    return {
+      charge_voltage_v_mean: chargeSummary.voltage.mean,
+      charge_voltage_v_std: chargeSummary.voltage.std,
+      charge_voltage_v_min: chargeSummary.voltage.min,
+      charge_voltage_v_max: chargeSummary.voltage.max,
+      charge_c_rate_mean: chargeSummary.cRate.mean,
+      charge_temperature_k_mean: chargeSummary.temperature.mean,
+      discharge_voltage_v_mean: dischargeSummary.voltage.mean,
+      discharge_voltage_v_std: dischargeSummary.voltage.std,
+      discharge_voltage_v_min: dischargeSummary.voltage.min,
+      discharge_voltage_v_max: dischargeSummary.voltage.max,
+      discharge_c_rate_mean: dischargeSummary.cRate.mean,
+    };
+  }, []);
+
   const handleSelectFile = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0];
-    setSelectedFileName(file ? file.name : '');
+  const runPrediction = useCallback(
+    (summaries) => {
+      const featureMap = buildFeatureMap(summaries.charge?.stats, summaries.discharge?.stats);
+      const result = predictChemistry(featureMap);
+      setPrediction(result.label);
+      setProbabilities(result.probabilities);
+      setStatusMessage('Prediction generated using uploaded charge & discharge files.');
+      setErrorMessage('');
+    },
+    [buildFeatureMap]
+  );
+
+  const handleFileChange = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) {
+      return;
+    }
+    setSelectedFileName(files.map((file) => file.name).join(', '));
+    setIsProcessing(true);
+    setErrorMessage('');
+    setStatusMessage('Parsing uploaded file(s)...');
+
+    let updatedSummaries = { ...phaseSummaries };
+    try {
+      for (const file of files) {
+        const rows = await parseCsvFile(file);
+        if (!rows.length) {
+          throw new Error(`File ${file.name} does not contain any rows.`);
+        }
+        ensureColumns(rows);
+        const phase = detectPhase(file.name, rows);
+        const stats = summarizePhase(rows);
+        updatedSummaries = {
+          ...updatedSummaries,
+          [phase]: { stats, fileName: file.name },
+        };
+      }
+      setPhaseSummaries(updatedSummaries);
+      if (updatedSummaries.charge && updatedSummaries.discharge) {
+        runPrediction(updatedSummaries);
+      } else {
+        setStatusMessage('Upload both charge and discharge CSV files to run the prediction.');
+        setPrediction(null);
+        setProbabilities(null);
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsProcessing(false);
+    }
   };
+
+  const handleRunModel = () => {
+    if (phaseSummaries.charge && phaseSummaries.discharge) {
+      try {
+        runPrediction(phaseSummaries);
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : String(err));
+      }
+    }
+  };
+
+  const probabilityEntries = useMemo(() => {
+    if (!probabilities) return [];
+    return Object.entries(probabilities).map(([label, value]) => ({
+      label,
+      percent: (value * 100).toFixed(2),
+    }));
+  }, [probabilities]);
+
+  const topProbability = useMemo(() => {
+    if (!prediction || !probabilities) return null;
+    const value = probabilities[prediction];
+    return typeof value === 'number' ? value * 100 : null;
+  }, [prediction, probabilities]);
 
   return (
     <Box className="app-root">
@@ -193,11 +379,39 @@ function App() {
                 </Stack>
               </Paper>
 
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="center">
+                {['charge', 'discharge'].map((phase) => {
+                  const phaseData = phaseSummaries[phase];
+                  return (
+                    <Chip
+                      key={phase}
+                      color={phaseData ? 'success' : 'default'}
+                      variant={phaseData ? 'filled' : 'outlined'}
+                      label={
+                        phaseData ? `${phase.toUpperCase()} · ${phaseData.fileName}` : `${phase.toUpperCase()} pending`
+                      }
+                    />
+                  );
+                })}
+              </Stack>
+
+              {errorMessage && (
+                <Alert severity="error" onClose={() => setErrorMessage('')}>
+                  {errorMessage}
+                </Alert>
+              )}
+              {statusMessage && !errorMessage && (
+                <Alert severity="info" onClose={() => setStatusMessage('')}>
+                  {statusMessage}
+                </Alert>
+              )}
+
               <input
                 hidden
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.xls,.xlsx"
+                multiple
+                accept=".csv"
                 onChange={handleFileChange}
               />
 
@@ -211,9 +425,11 @@ function App() {
                   startIcon={<CloudUploadIcon />}
                   onClick={handleSelectFile}
                   size="large"
+                  disabled={isProcessing}
                 >
-                  Choose File
+                  {isProcessing ? 'Processing...' : 'Choose File(s)'}
                 </Button>
+                {isProcessing && <CircularProgress size={24} />}
                 <Typography
                   variant="body2"
                   color={selectedFileName ? 'text.primary' : 'text.secondary'}
@@ -231,7 +447,8 @@ function App() {
                   color="secondary"
                   startIcon={<PlayArrowIcon />}
                   size="large"
-                  disabled={!selectedFileName}
+                  onClick={handleRunModel}
+                  disabled={!(phaseSummaries.charge && phaseSummaries.discharge) || isProcessing}
                 >
                   Run Model Analysis
                 </Button>
@@ -255,10 +472,39 @@ function App() {
             <Typography variant="subtitle1" fontWeight={600} gutterBottom>
               Prediction Preview
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Once the model integration is complete, this section will display health
-              indices, remaining life curves, and other performance insights.
-            </Typography>
+            {prediction ? (
+              <Stack spacing={2}>
+                <Typography variant="h4" fontWeight={700}>
+                  {prediction}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Top prediction with probability {topProbability ? topProbability.toFixed(2) : '--'}%
+                </Typography>
+                <Stack spacing={1}>
+                  {probabilityEntries.map((entry) => (
+                    <Stack
+                      key={entry.label}
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="body2" fontWeight={600}>
+                        {entry.label}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {entry.percent}%
+                      </Typography>
+                    </Stack>
+                  ))}
+                </Stack>
+              </Stack>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Upload both charge and discharge CSV files from the same cycle to preview the chemistry
+                classification probabilities.
+              </Typography>
+            )}
           </Paper>
 
           <Paper elevation={0} sx={{ p: { xs: 3, md: 4 }, border: '1px solid', borderColor: 'divider' }}>
