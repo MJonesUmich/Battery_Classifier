@@ -1,27 +1,28 @@
 # 前端 Demo 任务说明（v2）
 
 ## 1. 准备可下载的样例 CSV
-1. 从 `assets/raw` 中挑选 **任意两个不同化学体系** 的电池原始 CSV（charge/discharge 均可，不需要额外 API）。
-2. 使用下方脚本将原始 CSV 规整为 100 行左右的示例文件（**按照 `sample_index` 取等距行，需要保留所有模型用到的列**）：
+1. 使用脚本 `src/create_demo_datasets.py` 可直接生成 demo 数据。脚本会遍历 `assets/processed/<chemistry>/<battery>` 下所有拥有 charge/discharge 成对 CSV 的目录，再随机挑选 4 个样本生成。
+   示例：
    ```bash
-   .venv\Scripts\python.exe -c "import pandas as pd; import numpy as np; \
-from pathlib import Path; src = Path('assets/raw/LCO/Capacity_25C/charge.csv'); \
-df = pd.read_csv(src); \
-required = ['battery_id','chemistry','cycle_index','sample_index','normalized_time','elapsed_time_s','voltage_v','current_a','c_rate','temperature_k']; \
-df = df[required]; \
-idx = np.linspace(0, len(df)-1, 100, dtype=int); \
-df.iloc[idx].to_csv('frontend/battery-best/public/datasets/LCO_sample_charge.csv', index=False)"
+   # 生成默认的四个化学体系（LCO / LFP / NCA / NMC）
+   .venv\Scripts\python.exe src\create_demo_datasets.py
+
+   # 或随机从候选池里挑 count 个样本
+   .venv\Scripts\python.exe src\create_demo_datasets.py --random --count 4
    ```
-   - 对放电文件或第二个化学体系重复上述步骤（命名示例：`LCO_sample_discharge.csv`、`LFP_sample_charge.csv` 等）。
-   - 如果原文件低于 100 行，可直接全部保留；关键是保持顺序并包含上述列。
-3. 在 React App 的 “Need a dataset to try?” 区域提供这两个示例文件的下载链接（引用 `public/datasets/*.csv`）。
+2. 每个输出文件（如 `LCO_sample.csv`）包含两段数据：前 100 行为 charge，后 100 行为 discharge，同时保留 `phase` 字段（`charge` / `discharge`）以及模型必需列：
+   ```
+   phase,battery_id,chemistry,cycle_index,sample_index,normalized_time,elapsed_time_s,
+   voltage_v,current_a,c_rate,temperature_k
+   ```
+3. 将生成的 CSV 放在 `frontend/battery-best/public/datasets/`；脚本同时会写入 `datasets.json`，React 页面会自动读取该清单来渲染下载列表。
 
 ## 2. 上传与解析（纯前端）
-1. 用户点击 “上传 CSV”，直接从本地选择 `assets/raw` 下任意文件；前端使用 `PapaParse`（或 `FileReader + d3-dsv`）读取原始数据。
-2. 在浏览器中校验必需字段：`cycle_index, sample_index, normalized_time, voltage_v, c_rate, temperature_k`。整个过程无需服务器或额外 API。
+1. 用户点击 “上传 CSV”，可上传上述 demo 文件或任意自备的原始 CSV（建议同一个循环内包含 charge + discharge）。
+2. 浏览器端使用 `PapaParse` 读取数据，并校验必需字段：`phase`（或 `current_a` 符号用于推断）、`cycle_index`, `sample_index`, `normalized_time`, `voltage_v`, `c_rate`, `temperature_k` 等，无需后端。
 
 ## 3. 特征转换（完全在前端）
-1. 解析到的原始 CSV 在前端拆分 charge / discharge（可根据文件名或 `current_a` 符号判断）。
+1. 根据 `phase` 列（若缺失则根据 `current_a` 正负）在前端拆分 charge / discharge。
 2. 在浏览器里计算以下字段的 `mean / std / min / max`：
    - Charge: `voltage_v`, `c_rate`, `temperature_k`
    - Discharge: `voltage_v`, `c_rate`

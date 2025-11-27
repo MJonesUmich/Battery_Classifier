@@ -18,7 +18,7 @@ import {
   Typography,
 } from '@mui/material';
 import Papa from 'papaparse';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import predictChemistry from './utils/logregPredict';
 import logo from './logo.svg';
@@ -48,37 +48,38 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const datasetBaseUrl = `${process.env.PUBLIC_URL || ''}/datasets`;
-  const sampleDatasets = [
-    {
-      id: 'lco-charge',
-      title: 'LCO · Charge Cycle',
-      size: '~5 KB CSV',
-      url: `${datasetBaseUrl}/LCO_sample_charge.csv`,
-      description: '100-point constant-current charge slice from the Capacity_25C cell.',
-    },
-    {
-      id: 'lco-discharge',
-      title: 'LCO · Discharge Cycle',
-      size: '~5 KB CSV',
-      url: `${datasetBaseUrl}/LCO_sample_discharge.csv`,
-      description: 'Matching discharge curve covering the same cycle for reference.',
-    },
-    {
-      id: 'lfp-charge',
-      title: 'LFP · Charge Cycle',
-      size: '~5 KB CSV',
-      url: `${datasetBaseUrl}/LFP_sample_charge.csv`,
-      description: 'LFP chemistry example highlighting a slower voltage ramp.',
-    },
-    {
-      id: 'lfp-discharge',
-      title: 'LFP · Discharge Cycle',
-      size: '~5 KB CSV',
-      url: `${datasetBaseUrl}/LFP_sample_discharge.csv`,
-      description: 'Companion discharge sample showcasing the flat voltage plateau.',
-    },
-  ];
+  const datasetBaseUrl = useMemo(() => `${process.env.PUBLIC_URL || ''}/datasets`, []);
+  const [sampleDatasets, setSampleDatasets] = useState([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(true);
+  const [datasetsError, setDatasetsError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadManifest = async () => {
+      try {
+        setDatasetsLoading(true);
+        const response = await fetch(`${datasetBaseUrl}/datasets.json`, { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`Failed to load datasets.json (${response.status})`);
+        }
+        const payload = await response.json();
+        const entries = (payload.datasets || []).map((item) => ({
+          ...item,
+          url: `${datasetBaseUrl}/${item.file}`,
+        }));
+        setSampleDatasets(entries);
+        setDatasetsError('');
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setDatasetsError(err.message || 'Unable to load sample datasets.');
+        }
+      } finally {
+        setDatasetsLoading(false);
+      }
+    };
+    loadManifest();
+    return () => controller.abort();
+  }, [datasetBaseUrl]);
 
   const parseCsvFile = (file) =>
     new Promise((resolve, reject) => {
@@ -96,15 +97,6 @@ function App() {
         error: (err) => reject(err),
       });
     });
-
-  const detectPhase = (fileName, rows) => {
-    const lower = fileName.toLowerCase();
-    if (lower.includes('discharge')) return 'discharge';
-    if (lower.includes('charge')) return 'charge';
-    const avgCurrent =
-      rows.reduce((acc, row) => acc + (Number(row.current_a) || 0), 0) / Math.max(rows.length, 1);
-    return avgCurrent < 0 ? 'discharge' : 'charge';
-  };
 
   const ensureColumns = (rows) => {
     const missing = REQUIRED_COLUMNS.filter((col) => !(col in (rows[0] || {})));
@@ -131,7 +123,7 @@ function App() {
     };
   };
 
-  const summarizePhase = (rows) => {
+  const summarizePhase = (rows, includeTemperature = true) => {
     ensureColumns(rows);
     const sorted = [...rows].sort((a, b) => Number(a.sample_index) - Number(b.sample_index));
     const subset =
@@ -148,8 +140,31 @@ function App() {
     return {
       voltage: calcStats(subset, 'voltage_v'),
       cRate: calcStats(subset, 'c_rate'),
-      temperature: calcStats(subset, 'temperature_k'),
+      temperature: includeTemperature ? calcStats(subset, 'temperature_k') : null,
     };
+  };
+
+  const splitRowsByPhase = (rows) => {
+    const chargeRows = [];
+    const dischargeRows = [];
+    rows.forEach((row) => {
+      const explicit = (row.phase || '').toString().toLowerCase();
+      if (explicit === 'charge') {
+        chargeRows.push(row);
+        return;
+      }
+      if (explicit === 'discharge') {
+        dischargeRows.push(row);
+        return;
+      }
+      const current = Number(row.current_a);
+      if (Number.isFinite(current) && current < 0) {
+        dischargeRows.push(row);
+      } else {
+        chargeRows.push(row);
+      }
+    });
+    return { chargeRows, dischargeRows };
   };
 
   const buildFeatureMap = useCallback((chargeSummary, dischargeSummary) => {
@@ -204,13 +219,22 @@ function App() {
         if (!rows.length) {
           throw new Error(`File ${file.name} does not contain any rows.`);
         }
-        ensureColumns(rows);
-        const phase = detectPhase(file.name, rows);
-        const stats = summarizePhase(rows);
-        updatedSummaries = {
-          ...updatedSummaries,
-          [phase]: { stats, fileName: file.name },
-        };
+        const { chargeRows, dischargeRows } = splitRowsByPhase(rows);
+        if (!chargeRows.length && !dischargeRows.length) {
+          throw new Error(`Unable to detect charge/discharge rows in ${file.name}.`);
+        }
+        if (chargeRows.length) {
+          updatedSummaries = {
+            ...updatedSummaries,
+            charge: { stats: summarizePhase(chargeRows), fileName: file.name },
+          };
+        }
+        if (dischargeRows.length) {
+          updatedSummaries = {
+            ...updatedSummaries,
+            discharge: { stats: summarizePhase(dischargeRows, false), fileName: file.name },
+          };
+        }
       }
       setPhaseSummaries(updatedSummaries);
       if (updatedSummaries.charge && updatedSummaries.discharge) {
@@ -344,38 +368,49 @@ function App() {
                   <Typography variant="body2" color="text.secondary">
                     Grab one of the sample CSV files below if you don't have your own data yet, then come back to upload.
                   </Typography>
-                  <Stack
-                    direction={{ xs: 'column', md: 'row' }}
-                    spacing={2}
-                    sx={{ width: '100%' }}
-                  >
-                    {sampleDatasets.map((dataset) => (
-                      <Paper key={dataset.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
-                        <Stack spacing={1.5}>
-                          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                            <Typography variant="subtitle2" fontWeight={600}>
-                              {dataset.title}
+                  {datasetsLoading ? (
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <CircularProgress size={20} />
+                      <Typography variant="body2" color="text.secondary">
+                        Loading sample datasets...
+                      </Typography>
+                    </Stack>
+                  ) : datasetsError ? (
+                    <Alert severity="warning">{datasetsError}</Alert>
+                  ) : sampleDatasets.length ? (
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ width: '100%' }}>
+                      {sampleDatasets.map((dataset) => (
+                        <Paper key={dataset.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
+                          <Stack spacing={1.5}>
+                            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                              <Typography variant="subtitle2" fontWeight={600}>
+                                {dataset.title}
+                              </Typography>
+                              <Chip label={dataset.size || 'CSV'} size="small" color="primary" variant="outlined" />
+                            </Stack>
+                            <Typography variant="body2" color="text.secondary">
+                              {dataset.description}
                             </Typography>
-                            <Chip label={dataset.size} size="small" color="primary" variant="outlined" />
+                            <Button
+                              component="a"
+                              href={dataset.url}
+                              download
+                              size="small"
+                              variant="contained"
+                              color="primary"
+                              sx={{ alignSelf: 'flex-start' }}
+                            >
+                              Download CSV
+                            </Button>
                           </Stack>
-                          <Typography variant="body2" color="text.secondary">
-                            {dataset.description}
-                          </Typography>
-                          <Button
-                            component="a"
-                            href={dataset.url}
-                            download
-                            size="small"
-                            variant="contained"
-                            color="primary"
-                            sx={{ alignSelf: 'flex-start' }}
-                          >
-                            Download CSV
-                          </Button>
-                        </Stack>
-                      </Paper>
-                    ))}
-                  </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      No sample datasets available. Please regenerate them via `create_demo_datasets.py`.
+                    </Typography>
+                  )}
                 </Stack>
               </Paper>
 

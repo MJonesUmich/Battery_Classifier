@@ -1,0 +1,33 @@
+{
+  "generated_at": "2025-11-27T17:25:14Z",
+  "datasets": [
+    {
+      "id": "NMC_G54C1_sample",
+      "title": "NMC \u00b7 G54C1",
+      "description": "NMC / G54C1 combined cycle (auto-generated).",
+      "file": "NMC_G54C1_sample.csv",
+      "size": "19.7 KB CSV"
+    },
+    {
+      "id": "LFP_MIT_20180412_cell_20_processed_sample",
+      "title": "LFP \u00b7 MIT_20180412_cell_20_processed",
+      "description": "LFP / MIT_20180412_cell_20_processed combined cycle (auto-generated).",
+      "file": "LFP_MIT_20180412_cell_20_processed_sample.csv",
+      "size": "25.1 KB CSV"
+    },
+    {
+      "id": "LCO_CS2_3_sample",
+      "title": "LCO \u00b7 CS2_3",
+      "description": "LCO / CS2_3 combined cycle (auto-generated).",
+      "file": "LCO_CS2_3_sample.csv",
+      "size": "22.5 KB CSV"
+    },
+    {
+      "id": "LFP_MIT_20180220_cell_0_processed_sample",
+      "title": "LFP \u00b7 MIT_20180220_cell_0_processed",
+      "description": "LFP / MIT_20180220_cell_0_processed combined cycle (auto-generated).",
+      "file": "LFP_MIT_20180220_cell_0_processed_sample.csv",
+      "size": "24.1 KB CSV"
+    }
+  ]
+}
