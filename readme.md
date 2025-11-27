@@ -1,85 +1,69 @@
-using python 3.11
+# Battery Classifier
 
-important
-regard to down sample: no down sample yet
-NCA,LFP low sample size
-export_pl_data.m: update the data source
+Battery chemistry classification toolkit built with Python 3.11. The repo bundles:
 
-## Matplotlib Figure Standards
+- Data parsers that normalize vendor/partner test files into a common schema.
+- Notebook experiments for tabular and image models (logistic regression, random forest, CNN).
+- Utilities that export lightweight artifacts (demo CSVs + JSON model weights) for the React frontend.
 
-All parsers must follow these standards when generating battery cycle plots:
+The codebase was optimized for fast iteration on local datasets and easy deployment to lightweight environments (browser, mobile, embedded).
 
-### Standard Figure Format
+---
 
-```python
-import matplotlib
-matplotlib.use("Agg")  # Use non-interactive backend for multi-threading
-import matplotlib.pyplot as plt
+## How to Run
 
-# Charge Plot
-plt.figure(figsize=(10, 6))
-plt.plot(
-    charge_df["Charge_Time(s)"],
-    charge_df["Voltage(V)"],
-    "b-",
-    linewidth=2,
-)
-plt.xlabel("Charge Time (s)", fontsize=12)
-plt.ylabel("Voltage (V)", fontsize=12)
-plt.title(f"Cycle {cycle} Charge Profile", fontsize=14)
-plt.grid(True, alpha=0.3)
-plt.savefig(save_path, dpi=100, bbox_inches="tight")
-plt.close()
+All commands below are verified on Windows 10 PowerShell. Other operating systems have not been tested with this repo, so the steps may require adaptation.
 
-# Discharge Plot
-plt.figure(figsize=(10, 6))
-plt.plot(
-    discharge_df["Discharge_Time(s)"],
-    discharge_df["Voltage(V)"],
-    "r-",
-    linewidth=2,
-)
-plt.xlabel("Discharge Time (s)", fontsize=12)
-plt.ylabel("Voltage (V)", fontsize=12)
-plt.title(f"Cycle {cycle} Discharge Profile", fontsize=14)
-plt.grid(True, alpha=0.3)
-plt.savefig(save_path, dpi=100, bbox_inches="tight")
-plt.close()
+### 1. Bootstrap the environment
+```powershell
+cd <your-clone-path>\Battery_Classifier
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -U pip
+pip install -r requirements.txt
 ```
 
-### Required Parameters
+### 2. Prepare processed assets
+Place your cleaned CSVs under `assets/processed/<CHEMISTRY>/<BATTERY_ID>/`. Each battery folder should contain both `*_charge*.csv` and `*_discharge*.csv`. The parsers under `src/parser/` can help convert vendor exports into this format.
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `figsize` | `(10, 6)` | Figure size in inches |
-| Line style (charge) | `"b-"` | Blue solid line |
-| Line style (discharge) | `"r-"` | Red solid line |
-| `linewidth` | `2` | Line width |
-| X-axis label fontsize | `12` | Font size for axis labels |
-| Y-axis label fontsize | `12` | Font size for axis labels |
-| Title fontsize | `14` | Font size for title |
-| Grid | `True, alpha=0.3` | Semi-transparent grid |
-| DPI | `100` | Resolution |
-| `bbox_inches` | `"tight"` | Tight bounding box |
-
-### Axis Labels
-
-- **Charge plots**: 
-  - X-axis: `"Charge Time (s)"`
-  - Y-axis: `"Voltage (V)"`
-  
-- **Discharge plots**:
-  - X-axis: `"Discharge Time (s)"`
-  - Y-axis: `"Voltage (V)"`
-
-### File Naming Convention
-
+### 3. Explore / retrain in notebooks
+```powershell
+python -m jupyter lab
 ```
-Cycle_{N}_{charge|discharge}_Crate_{rate}_tempK_{temp}_batteryID_{id}.png
+Open `notebooks/05_Logistic_Regression_Exploration.ipynb` (and the other notebooks) to reproduce experiments or tweak hyperparameters. When the processed data changes, re‑run the final notebook cell to refresh the frontend artifacts (see step 4).
+
+### Notebook execution order
+Run every notebook in sequence so preprocessing, feature engineering, and model exports stay aligned:
+1. `01_Data_Preprocessing.ipynb` – clean raw CSVs into the normalized schema used throughout the repo.
+2. `02_Image_Preprocessing.ipynb` – generate the processed image tiles that feed the CNN workflows.
+3. `03_Background.ipynb` – high-level context and sanity checks on the processed tables.
+4. `04_EDA.ipynb` – exploratory plots/statistics on the feature set.
+5. `05_Logistic_Regression_Exploration.ipynb` – main tabular chemistry classifier (plus frontend export cell).
+6. `06_PCA_Exploration.ipynb` – dimensionality reduction experiments.
+7. `07_Random_Forest_Classification.ipynb` – alternative tree-based baseline.
+8. `08_1D_CNN.ipynb` – sequence-based CNN modeling for charge/discharge traces.
+9. `09_image_based_classification.ipynb` – computer-vision pipeline using processed microscopy images.
+
+### 4. Refresh frontend demo data + JS model
+Stay inside `notebooks/05_Logistic_Regression_Exploration.ipynb` and simply run the final `%run` helper cell. It calls `create_demo_datasets.py` and `export_logreg_to_json.py` for you, so there’s no need to execute those scripts manually—the notebook will regenerate both the demo CSVs and the JavaScript inference bundle whenever the processed assets change.
+
+### 5. (Optional) Run the React demo
+```powershell
+cd frontend\battery-best
+npm install
+npm start
 ```
 
-Example: `Cycle_1_charge_Crate_0.5_tempK_298.15_batteryID_CS2_3.png`
+---
 
-### Compliance
+## Repository Highlights
+- `src/utils/prepare_logreg_dataset.py` – shared feature engineering helpers for the logistic regression pipeline.
+- `src/model_training/image/` – image classification experiments for future extensions (CNN).
+- `notebooks/` – step‑by‑step experimentation for multiple model families.
+- `frontend/battery-best/` – React single-page app for demoing chemistry prediction directly in the browser.
 
-All parsers (CS2, CX2, PL, Stanford, Oxford, INR) follow this standard.
+Notes:
+- Downsampling for the React demo is handled entirely by `create_demo_datasets.py`.
+- LCO/NCA currently have fewer real samples; future data collection should prioritize those chemistries.
+- MATLAB helper `export_pl_data.m` must be aimed at the latest raw source before re-running the PL parser.
+- Plotting conventions now live alongside the code in `src/parser/plotting/02_plotJ_processed_voltage_time.py`, so reference that script for the latest Matplotlib defaults.
