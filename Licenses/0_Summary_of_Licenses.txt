@@ -2,17 +2,19 @@ Multiple licenses apply to this work due to the varied datasources we utilized. 
 
 ==============APPLICABLE LICENSES=================
 1. Commons Attribution 4.0 International. This license applies to the following data records: 
-   A. Tongi Data
-   B. Standford Data
-   C. ISU Data
-   D. MIT Data
+   A. Tongi Data (retrieved from: https://zenodo.org/records/6405084)
+   B. Standford Data (retrieved from: https://data.mendeley.com/datasets/kxsbr4x3j2/2)
+   C. ISU Data (retrieved from: https://iastate.figshare.com/articles/dataset/_b_ISU-ILCC_Battery_Aging_Dataset_b_/22582234)
+   D. MIT Data (retrieved from: https://data.matr.io/1/projects/5c48dd2bc625d700019f3204)
 2. Creative Commons Zero public domain dedication
-   A. Calce Data [CX2, CS2, PL, INR] 
+   A. Calce Data [CX2, CS2, PL, INR] (retrieved from: https://www.batteryarchive.org
 3. Creative Commons Attribution-NonCommercial 3.0 Unported (CC BY-NC 3.0)
-   A. TU Finland Data 
+   A. TU Finland Data (retrieved from: https://etsin.fairdata.fi/dataset/f60a7388-99b6-4637-96d5-8610a7f71612/data)
 4. Open Data Commons Open Database License v1.0
-   A. Oxford Data
+   A. Oxford Data (retrieved from: https://www.batteryarchive.org)
 5. Creative Commons Zero (CC0) public domain dedication
    A. All python code published in this repository 
    B. All Jupyter notebooks published in this repository 
    C. Any and add figures, visualizations, textual reports, and relavent information provided in this repository that is not subject to any of the other licenses described in copyrights 1 through 4.
+
+
