@@ -8,7 +8,7 @@ Multiple licenses apply to this work due to the varied datasources we utilized. 
    D. MIT Data
 2. Creative Commons Zero public domain dedication
    A. Calce Data [CX2, CS2, PL, INR] 
-3. Creative Commons Attribution-NonCommercial 3.0 Unported
+3. Creative Commons Attribution-NonCommercial 3.0 Unported (CC BY-NC 3.0)
    A. TU Finland Data 
 4. Open Data Commons Open Database License v1.0
    A. Oxford Data
