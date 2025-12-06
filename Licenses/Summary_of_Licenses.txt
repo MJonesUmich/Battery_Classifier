@@ -1,0 +1,18 @@
+Multiple licenses apply to this work due to the varied datasources we utilized. The breakdown of applicable licenses is shared immediately below, along with the relavent dataset / code that it applies to. Individual copies of the license aggreements accompany this governing document. Any questions regarding appropriate use or attribution should be directed at Matthew Jones (mjonesgm@umich.edu) or Shen Shu (shenshu@umich.edu).
+
+==============APPLICABLE LICENSES=================
+1. Commons Attribution 4.0 International. This license applies to the following data records: 
+   A. Tongi Data
+   B. Standford Data
+   C. ISU Data
+   D. MIT Data
+2. Creative Commons Zero public domain dedication
+   A. Calce Data [CX2, CS2, PL, INR] 
+3. Creative Commons Attribution-NonCommercial 3.0 Unported
+   A. TU Finland Data 
+4. Open Data Commons Open Database License v1.0
+   A. Oxford Data
+5. Creative Commons Zero (CC0) public domain dedication
+   A. All python code published in this repository 
+   B. All Jupyter notebooks published in this repository 
+   C. Any and add figures, visualizations, textual reports, and relavent information provided in this repository that is not subject to any of the other licenses described in copyrights 1 through 4.
