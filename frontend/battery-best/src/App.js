@@ -28,6 +28,13 @@ function App() {
     fileInputRef.current?.click();
   };
 
+  const predictionRef = useRef(null);
+  const scrollToPrediction = () => {
+    if (predictionRef.current) {
+      predictionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const runPrediction = useCallback((summaries) => {
       const featureMap = buildFeatureMap(summaries.charge?.stats, summaries.discharge?.stats);
       const result = predictChemistry(featureMap);
@@ -92,9 +99,9 @@ function App() {
       setSelectedFileName(`${dataset.file} (sample)`);
 
       if (updatedSummaries.charge && updatedSummaries.discharge) {
-        setStatusMessage('Sample ready. Click "Run Model Analysis" to generate prediction.');
-        setPrediction(null);
-        setProbabilities(null);
+        setStatusMessage('Sample loaded. Running model...');
+        runPrediction(updatedSummaries);
+        scrollToPrediction();
       } else {
         setStatusMessage('Sample is missing charge or discharge data.');
         setPrediction(null);
@@ -167,7 +174,9 @@ function App() {
             onDismissStatus={() => setStatusMessage('')}
           />
 
-          <PredictionPreview prediction={prediction} topProbability={topProbability} probabilityEntries={probabilityEntries} />
+          <div ref={predictionRef}>
+            <PredictionPreview prediction={prediction} topProbability={topProbability} probabilityEntries={probabilityEntries} />
+          </div>
 
           <EnterpriseCta />
         </Stack>
