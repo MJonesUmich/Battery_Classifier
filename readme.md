@@ -26,14 +26,14 @@ pip install -r requirements.txt
 ```
 
 ### 2. Get the data assets
-- **Required (raw data)**: Download `raw_20251207.zip` (~14.09 GB) from https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing and extract to `assets/raw/` (e.g., CS2, CX2, Dataset_1_NCA_battery, INR, ISU, MIT, Oxford, PL, Stanford, TU_Finland). Without this, parsers and notebooks cannot run.
-- **Optional but recommended**: Download the processed/images bundle (~4.46 GB) from https://drive.google.com/file/d/1Sg6yYnOG9Xf_9XegGZ_khLr2wJUaHR38/view?usp=sharing and extract into `assets/` to populate `processed/`, `images/`, and `images_clipped/`. This skips >2 hours of preprocessing; otherwise, run `src/01_run_all_parsers.py` (and related helpers) to regenerate processed data from raw.
+- **Required (raw data)**: Download `raw_20251207.zip` (~14.09 GB) from https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing and extract to `assets/raw/` (folders such as CS2, CX2, Dataset_1_NCA_battery, INR, ISU, MIT, Oxford, PL, Stanford, TU_Finland). Without this, parsers and notebooks cannot run.
+- **Optional but recommended**: Download the processed/images bundle (~4.46 GB) from https://drive.google.com/file/d/1Sg6yYnOG9Xf_9XegGZ_khLr2wJUaHR38/view?usp=sharing and extract into `assets/` to populate `processed/`, `images/`, and `images_clipped/`. This skips >2 hours of preprocessing; otherwise, run `src/01_run_all_parsers.py` (and helpers) to rebuild processed data from raw.
 
 ### 3. Explore / retrain in notebooks
 ```powershell
 python -m jupyter lab
 ```
-Open `notebooks/05_Logistic_Regression_Exploration.ipynb` (and the other notebooks) to reproduce experiments or tweak hyperparameters. When the processed data changes, re‑run the final notebook cell to refresh the frontend artifacts (see step 4).
+Open Jupyter Lab and start from `03_Background.ipynb` once the data assets are in place. When processed data changes, re‑run the final cell in `05_Logistic_Regression_Exploration.ipynb` to refresh frontend artifacts (see step 4).
 
 ### Notebook execution order
 Run preprocessing scripts first, then proceed with notebooks in order:
@@ -48,7 +48,7 @@ Run preprocessing scripts first, then proceed with notebooks in order:
 9. `09_image_based_classification.ipynb` – computer-vision pipeline using processed microscopy images.
 
 ### 4. Refresh frontend demo data + JS model
-Stay inside `notebooks/05_Logistic_Regression_Exploration.ipynb` and simply run the final `%run` helper cell. It calls `create_demo_datasets.py` and `export_logreg_to_json.py` for you, so there’s no need to execute those scripts manually—the notebook will regenerate both the demo CSVs and the JavaScript inference bundle whenever the processed assets change.
+In `05_Logistic_Regression_Exploration.ipynb`, run the final `%run` helper cell. It calls `create_demo_datasets.py` and `export_logreg_to_json.py` to regenerate demo CSVs and the JS model bundle whenever processed assets change.
 
 ### 5. (Optional) Run the React demo
 ```powershell
