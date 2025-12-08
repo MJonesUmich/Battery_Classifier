@@ -35,9 +35,9 @@ python -m jupyter lab
 Open `notebooks/05_Logistic_Regression_Exploration.ipynb` (and the other notebooks) to reproduce experiments or tweak hyperparameters. When the processed data changes, re‑run the final notebook cell to refresh the frontend artifacts (see step 4).
 
 ### Notebook execution order
-Run every notebook in sequence so preprocessing, feature engineering, and model exports stay aligned:
-1. `01_Data_Preprocessing.ipynb` – clean raw CSVs into the normalized schema used throughout the repo.
-2. `02_Image_Preprocessing.ipynb` – generate the processed image tiles that feed the CNN workflows.
+Run preprocessing scripts first, then proceed with notebooks in order:
+1. `src/01_run_all_parsers.py` – parse raw vendor data into the normalized processed CSVs.
+2. `src/02_plot_processed_voltage_time.py` – generate processed voltage/time plots (optional sanity check).
 3. `03_Background.ipynb` – high-level context and sanity checks on the processed tables.
 4. `04_EDA.ipynb` – exploratory plots/statistics on the feature set.
 5. `05_Logistic_Regression_Exploration.ipynb` – main tabular chemistry classifier (plus frontend export cell).
