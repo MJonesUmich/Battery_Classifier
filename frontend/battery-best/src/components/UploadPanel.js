@@ -133,20 +133,6 @@ const UploadPanel = ({
         </Stack>
       </Paper>
 
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="center">
-        {['charge', 'discharge'].map((phase) => {
-          const phaseData = phaseSummaries[phase];
-          return (
-            <Chip
-              key={phase}
-              color={phaseData ? 'success' : 'default'}
-              variant={phaseData ? 'filled' : 'outlined'}
-              label={phaseData ? `${phase.toUpperCase()} · ${phaseData.fileName}` : `${phase.toUpperCase()} pending`}
-            />
-          );
-        })}
-      </Stack>
-
       {errorMessage && (
         <Alert severity="error" onClose={onDismissError}>
           {errorMessage}
