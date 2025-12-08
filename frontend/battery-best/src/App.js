@@ -163,13 +163,7 @@ function App() {
             onDismissStatus={() => setStatusMessage('')}
           />
 
-          <PredictionPreview
-            prediction={prediction}
-            topProbability={topProbability}
-            probabilityEntries={probabilityEntries}
-            chargePoints={chargePoints}
-            dischargePoints={dischargePoints}
-          />
+          <PredictionPreview prediction={prediction} topProbability={topProbability} probabilityEntries={probabilityEntries} />
 
           <EnterpriseCta />
         </Stack>

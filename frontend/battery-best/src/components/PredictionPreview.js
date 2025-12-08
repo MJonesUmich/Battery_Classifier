@@ -1,7 +1,6 @@
-import { Box, Grid, Paper, Stack, Typography } from '@mui/material';
-import VoltagePlot from './VoltagePlot';
+import { Paper, Stack, Typography } from '@mui/material';
 
-const PredictionPreview = ({ prediction, topProbability, probabilityEntries, chargePoints, dischargePoints }) => (
+const PredictionPreview = ({ prediction, topProbability, probabilityEntries }) => (
   <Paper
     variant="outlined"
     sx={{
@@ -36,16 +35,6 @@ const PredictionPreview = ({ prediction, topProbability, probabilityEntries, cha
             </Stack>
           ))}
         </Stack>
-        <Box>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <VoltagePlot title="Charge Voltage Profile" color="#1976d2" points={chargePoints} />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <VoltagePlot title="Discharge Voltage Profile" color="#ff7043" points={dischargePoints} />
-            </Grid>
-          </Grid>
-        </Box>
       </Stack>
     ) : (
       <Typography variant="body2" color="text.secondary">
