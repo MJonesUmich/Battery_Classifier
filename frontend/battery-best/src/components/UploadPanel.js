@@ -1,17 +1,6 @@
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import {
-  Alert,
-  Box,
-  Button,
-  Chip,
-  CircularProgress,
-  Divider,
-  Grid,
-  Paper,
-  Stack,
-  Typography,
-} from '@mui/material';
+import { Alert, Button, Chip, CircularProgress, Divider, Grid, Paper, Stack, Typography } from '@mui/material';
 
 const UploadPanel = ({
   fileInputRef,

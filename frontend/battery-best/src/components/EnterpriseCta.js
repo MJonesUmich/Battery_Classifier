@@ -1,6 +1,5 @@
 import BusinessCenterIcon from '@mui/icons-material/BusinessCenter';
-import SupportAgentIcon from '@mui/icons-material/SupportAgent';
-import { Button, Chip, Grid, Paper, Stack, Typography } from '@mui/material';
+import { Button, Chip, Paper, Stack, Typography } from '@mui/material';
 
 const EnterpriseCta = () => (
   <Paper elevation={0} sx={{ p: { xs: 3, md: 4 }, border: '1px solid', borderColor: 'divider' }}>
