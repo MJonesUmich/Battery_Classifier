@@ -6,7 +6,7 @@ Battery chemistry classification toolkit built with Python 3.11. The repo bundle
 - Notebook experiments for tabular and image models (logistic regression, random forest, CNN).
 - Utilities that export lightweight artifacts (demo CSVs + JSON model weights) for the React frontend.
 
-You can explore the latest frontend build here: https://main.d1z5il29z8aho1.amplifyapp.com/12312321 – it is the exact artifact produced by the steps described below, so stakeholders can see the deployed experience without running the project locally.
+You can explore the latest frontend build here: https://main.d1z5il29z8aho1.amplifyapp.com – it is the exact artifact produced by the steps described below, so stakeholders can see the deployed experience without running the project locally.
 
 The codebase was optimized for fast iteration on local datasets and easy deployment to lightweight environments (browser, mobile, embedded).
 
