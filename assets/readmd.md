@@ -1,30 +1,34 @@
 # Assets Directory Setup
 
-## Interim / Processed / Images
+## Raw Data
 
-- Download the archive: https://drive.google.com/file/d/1zPV8V9b9WqKgPOA8yuvH0Mil5BkpDsgG/view?usp=drive_link (about 2.68 GB)
+- Download the raw data package `raw_20251207.zip`: https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing (about 14.09 GB)
+- Extract it to `assets/, resulting in:
+
+```
+assets/raw/
+├── CS2
+├── CX2
+├── Dataset_1_NCA_battery
+├── INR
+├── ISU
+├── MIT
+├── Oxford
+├── PL
+├── Stanford
+└── TU_Finland
+```
+
+## processed/ and images/ and images_clipped/
+
+- Download the archive: https://drive.google.com/file/d/1Sg6yYnOG9Xf_9XegGZ_khLr2wJUaHR38/view?usp=sharing (about 4.46 GB)
 - Extract it into `assets/` so the structure looks like:
 
 ```
 assets/
-├── interim/
-├── processed/
-└── images/
-```
+├── images/           # processed image tiles (full set)
+├── images_clipped/   # clipped image tiles
+├── processed/        # processed datasets (per chemistry/battery)
+├── raw/              # raw source datasets (per vendor/partner)
 
-## Raw Data
-
-- Download the raw data package `raw_data.7z`: https://drive.google.com/file/d/1GWEBmAY7b9EfZmLdTKhUQdZffyt0S9nh/view?usp=drive_link (about 9.24 GB)
-- Extract it to `assets/raw_data/`, resulting in:
-
-```
-assets/raw_data/
-├── CS2
-├── INR
-├── ISU
-├── LCO
-├── LFP
-├── MIT
-├── Oxford
-└── NMC
 ```
