@@ -15,10 +15,10 @@ const HeroBanner = ({ logoSrc }) => (
     />
 
     <Typography variant="body1" color="text.secondary">
-      Upload raw operational or lab data from your batteries. The platform will clean the signals,
-      train diagnostic models, and estimate the current health to help you evaluate fleet performance in minutes.
+      Demo: classify battery chemistry from charge/discharge records. Upload your CSVs or run the provided samples to see
+      the logistic regression output based on 11 engineered features.
     </Typography>
-    <Chip label="Trial Workspace" color="primary" variant="outlined" sx={{ mt: 2, fontWeight: 600 }} />
+    <Chip label="Chemistry Classifier Demo" color="primary" variant="outlined" sx={{ mt: 2, fontWeight: 600 }} />
   </Box>
 );
 

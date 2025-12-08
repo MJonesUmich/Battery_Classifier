@@ -149,8 +149,8 @@ function App() {
 
           <Alert severity="info" sx={{ alignItems: 'center' }}>
             <Typography variant="body2">
-              You are exploring the interactive trial experience. Once you validate the workflow, switch to our managed
-              batch update pipeline or request direct API access for large-scale inference.
+              This demo runs inference locally in your browser; uploaded CSVs stay on your machine. Use sample data to
+              auto-run, or upload your own and click &quot;Run Model Analysis&quot;.
             </Typography>
           </Alert>
 

@@ -11,13 +11,16 @@ const HowItWorksCard = () => (
             How It Works
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            1. Prepare a dataset containing fields such as time, voltage, current, and temperature in CSV or XLSX format.
+            1) Provide charge and discharge CSVs with voltage, C-rate, and temperature, or a single-row CSV containing
+            the 11 engineered features used by the model.
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            2. Click the upload button below, verify the preview, and start the analysis.
+            2) Use &quot;Predict Now&quot; on a sample to auto-run, or upload your own files and click &quot;Run Model
+            Analysis&quot; to start inference.
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            3. The model will return health index, remaining life, and other KPIs (placeholder UI in this version).
+            3) View the predicted chemistry and class probabilities. Charts are omitted in this demo to keep the flow
+            focused on the classifier.
           </Typography>
         </Stack>
       </Stack>

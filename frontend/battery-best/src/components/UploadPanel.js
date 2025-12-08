@@ -37,10 +37,11 @@ const UploadPanel = ({
           Upload Dataset
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Supports CSV and XLSX files. Parsing and model inference run in the background and typically take 1-2 minutes.
+          Supports CSV files. Parsing and inference run in-browser for this demo; upload charge and discharge together, or
+          a single-row feature CSV.
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          Trial mode processes a single asset at a time with limited retention.
+          Demo mode processes one sample at a time; files are not sent to any server.
         </Typography>
       </Stack>
 
@@ -117,15 +118,7 @@ const UploadPanel = ({
                       </Typography>
                     </Stack>
                     <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-                      <Button
-                        component="a"
-                        href={dataset.url}
-                        download
-                        size="small"
-                        variant="outlined"
-                        color="primary"
-                        fullWidth
-                      >
+                      <Button component="a" href={dataset.url} download size="small" variant="outlined" color="primary" fullWidth>
                         Download
                       </Button>
                       <Button
