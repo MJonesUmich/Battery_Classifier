@@ -1,8 +1,7 @@
-"""Generate combined (charge + discharge) demo CSVs for the React upload flow.
+"""Generate feature-only demo CSVs for the React upload flow.
 
-Each output file contains ~200 rows: the first half are evenly sampled charge
-points, the second half are discharge points. A `phase` column is added so the
-frontend can split the rows without needing two separate uploads.
+Each output file contains a single row with the 11 model features derived from
+paired charge/discharge CSVs.
 """
 
 from __future__ import annotations
@@ -19,50 +18,82 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-# Columns the frontend pipeline expects to exist in every demo CSV.
-REQUIRED_COLUMNS: List[str] = [
-    "battery_id",
-    "chemistry",
-    "cycle_index",
-    "sample_index",
-    "normalized_time",
-    "elapsed_time_s",
-    "voltage_v",
-    "current_a",
-    "c_rate",
-    "temperature_k",
-]
+# Columns required to compute features.
+REQUIRED_COLUMNS: List[str] = ["voltage_v", "c_rate", "temperature_k"]
 
-DEFAULT_SAMPLE_COUNT = 100
+FEATURE_COLUMNS: List[str] = [
+    "charge_voltage_v_mean",
+    "charge_voltage_v_std",
+    "charge_voltage_v_min",
+    "charge_voltage_v_max",
+    "charge_c_rate_mean",
+    "charge_temperature_k_mean",
+    "discharge_voltage_v_mean",
+    "discharge_voltage_v_std",
+    "discharge_voltage_v_min",
+    "discharge_voltage_v_max",
+    "discharge_c_rate_mean",
+]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "frontend" / "battery-best" / "public" / "datasets"
 DATA_ROOT = REPO_ROOT / "assets" / "processed"
 
 
-def downsample(input_path: Path, n_samples: int) -> pd.DataFrame:
-    df = pd.read_csv(input_path)
+def _calc_stats(series: pd.Series) -> Dict[str, float]:
+    return {
+        "mean": series.mean(),
+        "std": series.std(),
+        "min": series.min(),
+        "max": series.max(),
+    }
+
+
+def _summarize_phase(df: pd.DataFrame, filepath: Path, clip: bool = True) -> Dict[str, float]:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
-        raise ValueError(f"{input_path} is missing columns: {missing}")
+        raise ValueError(f"{filepath} is missing columns: {missing}")
 
-    subset = df[REQUIRED_COLUMNS].copy()
-    subset = subset.sort_values("sample_index")
-    if len(subset) > n_samples:
-        idx = np.linspace(0, len(subset) - 1, n_samples, dtype=int)
-        subset = subset.iloc[idx]
-    return subset.reset_index(drop=True)
+    tdf = df[REQUIRED_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    if clip:
+        tdf = tdf[(tdf["voltage_v"] >= 3.0) & (tdf["voltage_v"] <= 3.6)]
+    if tdf.empty:
+        raise ValueError(f"{filepath} has no rows after cleaning")
+
+    voltage_stats = _calc_stats(tdf["voltage_v"])
+    c_rate_stats = _calc_stats(tdf["c_rate"])
+    temp_mean = tdf["temperature_k"].mean()
+
+    return {
+        "voltage": voltage_stats,
+        "c_rate": c_rate_stats,
+        "temperature_mean": temp_mean,
+    }
 
 
 def build_demo_file(charge_path: Path, discharge_path: Path, output_path: Path) -> None:
-    charge_subset = downsample(charge_path, DEFAULT_SAMPLE_COUNT).assign(phase="charge")
-    discharge_subset = downsample(discharge_path, DEFAULT_SAMPLE_COUNT).assign(phase="discharge")
+    charge_df = pd.read_csv(charge_path)
+    discharge_df = pd.read_csv(discharge_path)
 
-    columns = ["phase", *REQUIRED_COLUMNS]
-    combined = pd.concat([charge_subset, discharge_subset], ignore_index=True)[columns]
+    charge_stats = _summarize_phase(charge_df, charge_path, clip=True)
+    discharge_stats = _summarize_phase(discharge_df, discharge_path, clip=True)
+
+    row = {
+        "charge_voltage_v_mean": charge_stats["voltage"]["mean"],
+        "charge_voltage_v_std": charge_stats["voltage"]["std"],
+        "charge_voltage_v_min": charge_stats["voltage"]["min"],
+        "charge_voltage_v_max": charge_stats["voltage"]["max"],
+        "charge_c_rate_mean": charge_stats["c_rate"]["mean"],
+        "charge_temperature_k_mean": charge_stats["temperature_mean"],
+        "discharge_voltage_v_mean": discharge_stats["voltage"]["mean"],
+        "discharge_voltage_v_std": discharge_stats["voltage"]["std"],
+        "discharge_voltage_v_min": discharge_stats["voltage"]["min"],
+        "discharge_voltage_v_max": discharge_stats["voltage"]["max"],
+        "discharge_c_rate_mean": discharge_stats["c_rate"]["mean"],
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_csv(output_path, index=False)
-    print(f"Wrote {len(combined)} rows to {output_path}")
+    pd.DataFrame([row], columns=FEATURE_COLUMNS).to_csv(output_path, index=False)
+    print(f"Wrote feature row to {output_path}")
 
 
 def slugify(value: str) -> str:
@@ -158,7 +189,7 @@ def main(random_choices: Optional[List[int]] = None) -> None:
                 "title": source["title"],
                 "description": source["description"],
                 "file": output_path.name,
-                "size": f"{size_kb:.1f} KB CSV",
+                "size": "Feature CSV",
             }
         )
 

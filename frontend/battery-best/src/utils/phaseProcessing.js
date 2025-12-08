@@ -1,17 +1,7 @@
 import Papa from 'papaparse';
+import { featureNames as MODEL_FEATURE_NAMES } from './logregPredict';
 
-const REQUIRED_COLUMNS = [
-  'battery_id',
-  'chemistry',
-  'cycle_index',
-  'sample_index',
-  'normalized_time',
-  'elapsed_time_s',
-  'voltage_v',
-  'current_a',
-  'c_rate',
-  'temperature_k',
-];
+const REQUIRED_COLUMNS = ['sample_index', 'normalized_time', 'voltage_v', 'c_rate', 'temperature_k'];
 
 const DEFAULT_SAMPLE_COUNT = 100;
 
@@ -49,6 +39,70 @@ const ensureColumns = (rows) => {
   if (missing.length) {
     throw new Error(`Missing required columns: ${missing.join(', ')}`);
   }
+};
+
+const isFeatureRow = (row) => MODEL_FEATURE_NAMES.every((name) => name in (row || {}));
+
+const toFeatureNumber = (row, key) => {
+  const value = Number(row[key]);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Feature ${key} is not numeric.`);
+  }
+  return value;
+};
+
+const buildSummariesFromFeatureRow = (row, fileName, currentSummaries = {}) => {
+  const get = (key) => toFeatureNumber(row, key);
+  const chargeSummary = {
+    stats: {
+      voltage: {
+        mean: get('charge_voltage_v_mean'),
+        std: get('charge_voltage_v_std'),
+        min: get('charge_voltage_v_min'),
+        max: get('charge_voltage_v_max'),
+      },
+      cRate: {
+        mean: get('charge_c_rate_mean'),
+        std: null,
+        min: null,
+        max: null,
+      },
+      temperature: {
+        mean: get('charge_temperature_k_mean'),
+        std: null,
+        min: null,
+        max: null,
+      },
+    },
+    points: [],
+    fileName,
+  };
+
+  const dischargeSummary = {
+    stats: {
+      voltage: {
+        mean: get('discharge_voltage_v_mean'),
+        std: get('discharge_voltage_v_std'),
+        min: get('discharge_voltage_v_min'),
+        max: get('discharge_voltage_v_max'),
+      },
+      cRate: {
+        mean: get('discharge_c_rate_mean'),
+        std: null,
+        min: null,
+        max: null,
+      },
+      temperature: null,
+    },
+    points: [],
+    fileName,
+  };
+
+  return {
+    ...currentSummaries,
+    charge: chargeSummary,
+    discharge: dischargeSummary,
+  };
 };
 
 const toNumericRow = (row, fallbackIndex) => ({
@@ -137,6 +191,10 @@ const splitRowsByPhase = (rows) => {
 };
 
 export const mergePhaseSummaries = (rows, fileName, currentSummaries = {}) => {
+  if (rows.length && isFeatureRow(rows[0])) {
+    return buildSummariesFromFeatureRow(rows[0], fileName, currentSummaries);
+  }
+
   const { chargeRows, dischargeRows } = splitRowsByPhase(rows);
   if (!chargeRows.length && !dischargeRows.length) {
     throw new Error(`Unable to detect charge/discharge rows in ${fileName}.`);
