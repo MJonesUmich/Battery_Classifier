@@ -58,7 +58,9 @@ function App() {
       }
       setPhaseSummaries(updatedSummaries);
       if (updatedSummaries.charge && updatedSummaries.discharge) {
-        runPrediction(updatedSummaries);
+        setStatusMessage('Charge & discharge ready. Click "Run Model Analysis" to generate prediction.');
+        setPrediction(null);
+        setProbabilities(null);
       } else {
         setStatusMessage('Upload both charge and discharge CSV files to run the prediction.');
         setPrediction(null);
@@ -90,7 +92,9 @@ function App() {
       setSelectedFileName(`${dataset.file} (sample)`);
 
       if (updatedSummaries.charge && updatedSummaries.discharge) {
-        runPrediction(updatedSummaries);
+        setStatusMessage('Sample ready. Click "Run Model Analysis" to generate prediction.');
+        setPrediction(null);
+        setProbabilities(null);
       } else {
         setStatusMessage('Sample is missing charge or discharge data.');
         setPrediction(null);
@@ -104,12 +108,15 @@ function App() {
   };
 
   const handleRunModel = () => {
-    if (phaseSummaries.charge && phaseSummaries.discharge) {
-      try {
-        runPrediction(phaseSummaries);
-      } catch (err) {
-        setErrorMessage(err instanceof Error ? err.message : String(err));
-      }
+    if (!phaseSummaries.charge || !phaseSummaries.discharge) {
+      setStatusMessage('Upload both charge and discharge CSV files to run the prediction.');
+      return;
+    }
+    try {
+      setStatusMessage('Running model...');
+      runPrediction(phaseSummaries);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -126,9 +133,6 @@ function App() {
     const value = probabilities[prediction];
     return typeof value === 'number' ? value * 100 : null;
   }, [prediction, probabilities]);
-
-  const chargePoints = phaseSummaries.charge?.points || [];
-  const dischargePoints = phaseSummaries.discharge?.points || [];
 
   return (
     <Box className="app-root">
