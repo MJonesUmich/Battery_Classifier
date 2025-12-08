@@ -1,32 +1,32 @@
 {
-  "generated_at": "2025-12-08T01:34:20Z",
+  "generated_at": "2025-12-08T01:46:18Z",
   "datasets": [
     {
-      "id": "LCO_CS2_37_sample",
-      "title": "LCO \u00b7 CS2_37",
-      "description": "LCO / CS2_37 combined cycle (auto-generated).",
-      "file": "LCO_CS2_37_sample.csv",
+      "id": "LCO_Capacity_50C_sample",
+      "title": "LCO \u00b7 Capacity_50C",
+      "description": "LCO / Capacity_50C combined cycle (auto-generated).",
+      "file": "LCO_Capacity_50C_sample.csv",
       "size": "Feature CSV"
     },
     {
-      "id": "LFP_MIT_20180412_cell_9_processed_sample",
-      "title": "LFP \u00b7 MIT_20180412_cell_9_processed",
-      "description": "LFP / MIT_20180412_cell_9_processed combined cycle (auto-generated).",
-      "file": "LFP_MIT_20180412_cell_9_processed_sample.csv",
+      "id": "LFP_MIT_20170512_cell_13_processed_sample",
+      "title": "LFP \u00b7 MIT_20170512_cell_13_processed",
+      "description": "LFP / MIT_20170512_cell_13_processed combined cycle (auto-generated).",
+      "file": "LFP_MIT_20170512_cell_13_processed_sample.csv",
       "size": "Feature CSV"
     },
     {
-      "id": "NCA_nca_k4_278k_sample",
-      "title": "NCA \u00b7 nca_k4_278k",
-      "description": "NCA / nca_k4_278k combined cycle (auto-generated).",
-      "file": "NCA_nca_k4_278k_sample.csv",
+      "id": "NCA_CY25-1_1_sample",
+      "title": "NCA \u00b7 CY25-1_1",
+      "description": "NCA / CY25-1_1 combined cycle (auto-generated).",
+      "file": "NCA_CY25-1_1_sample.csv",
       "size": "Feature CSV"
     },
     {
-      "id": "NMC_G60C2_sample",
-      "title": "NMC \u00b7 G60C2",
-      "description": "NMC / G60C2 combined cycle (auto-generated).",
-      "file": "NMC_G60C2_sample.csv",
+      "id": "NMC_G53C1_sample",
+      "title": "NMC \u00b7 G53C1",
+      "description": "NMC / G53C1 combined cycle (auto-generated).",
+      "file": "NMC_G53C1_sample.csv",
       "size": "Feature CSV"
     }
   ]

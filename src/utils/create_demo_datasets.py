@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import random
 
-random.seed(107)
+random.seed(2)
 import re
 from datetime import datetime
 from pathlib import Path

@@ -1,0 +1,2 @@
+charge_voltage_v_mean,charge_voltage_v_std,charge_voltage_v_min,charge_voltage_v_max,charge_c_rate_mean,charge_temperature_k_mean,discharge_voltage_v_mean,discharge_voltage_v_std,discharge_voltage_v_min,discharge_voltage_v_max,discharge_c_rate_mean
+3.395720758635217,0.13553070893729505,3.2179250717163086,3.5969970436406964,0.5,323.0,3.4602440086479116,0.137713187859416,3.015694371708283,3.599704614522564,0.5
