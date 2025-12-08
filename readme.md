@@ -39,13 +39,13 @@ Open Jupyter Lab and start from `03_Background.ipynb` once the data assets are i
 Run preprocessing scripts first, then proceed with notebooks in order:
 1. `src/01_run_all_parsers.py` – parse raw vendor data into the normalized processed CSVs.
 2. `src/02_plot_processed_voltage_time.py` – generate processed voltage/time plots (optional sanity check).
-3. `03_Background.ipynb` – high-level context and sanity checks on the processed tables.
-4. `04_EDA.ipynb` – exploratory plots/statistics on the feature set.
-5. `05_Logistic_Regression_Exploration.ipynb` – main tabular chemistry classifier (plus frontend export cell).
-6. `06_PCA_Exploration.ipynb` – dimensionality reduction experiments.
-7. `07_Random_Forest_Classification.ipynb` – alternative tree-based baseline.
-8. `08_1D_CNN.ipynb` – sequence-based CNN modeling for charge/discharge traces.
-9. `09_image_based_classification.ipynb` – computer-vision pipeline using processed microscopy images.
+3. `notebooks/03_Background.ipynb` – high-level context and sanity checks on the processed tables.
+4. `notebooks/04_EDA.ipynb` – exploratory plots/statistics on the feature set.
+5. `notebooks/05_Logistic_Regression_Exploration.ipynb` – main tabular chemistry classifier (plus frontend export cell).
+6. `notebooks/06_PCA_Exploration.ipynb` – dimensionality reduction experiments.
+7. `notebooks/07_Random_Forest_Classification.ipynb` – alternative tree-based baseline.
+8. `notebooks/08_1D_CNN.ipynb` – sequence-based CNN modeling for charge/discharge traces.
+9. `notebooks/09_image_based_classification.ipynb` – computer-vision pipeline using processed microscopy images.
 
 ### 4. Refresh frontend demo data + JS model
 In `05_Logistic_Regression_Exploration.ipynb`, run the final `%run` helper cell. It calls `create_demo_datasets.py` and `export_logreg_to_json.py` to regenerate demo CSVs and the JS model bundle whenever processed assets change.
