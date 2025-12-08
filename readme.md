@@ -25,8 +25,9 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-### 2. Prepare processed assets
-Place your cleaned CSVs under `assets/processed/<CHEMISTRY>/<BATTERY_ID>/`. Each battery folder should contain both `*_charge*.csv` and `*_discharge*.csv`. The parsers under `src/parser/` can help convert vendor exports into this format.
+### 2. Get the data assets
+- **Required (raw data)**: Download `raw_20251207.zip` (~14.09 GB) from https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing and extract to `assets/raw/` (e.g., CS2, CX2, Dataset_1_NCA_battery, INR, ISU, MIT, Oxford, PL, Stanford, TU_Finland). Without this, parsers and notebooks cannot run.
+- **Optional but recommended**: Download the processed/images bundle (~4.46 GB) from https://drive.google.com/file/d/1Sg6yYnOG9Xf_9XegGZ_khLr2wJUaHR38/view?usp=sharing and extract into `assets/` to populate `processed/`, `images/`, and `images_clipped/`. This skips >2 hours of preprocessing; otherwise, run `src/01_run_all_parsers.py` (and related helpers) to regenerate processed data from raw.
 
 ### 3. Explore / retrain in notebooks
 ```powershell
@@ -59,7 +60,6 @@ npm start
 ---
 
 ## Repository Highlights
-- `src/utils/prepare_logreg_dataset.py` – shared feature engineering helpers for the logistic regression pipeline.
 - `src/model_training/image/` – image classification experiments for future extensions (CNN).
 - `notebooks/` – step‑by‑step experimentation for multiple model families.
 - `frontend/battery-best/` – React single-page app for demoing chemistry prediction directly in the browser.
