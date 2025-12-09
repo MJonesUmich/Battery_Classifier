@@ -62,9 +62,10 @@ npm start
 ---
 
 ## Repository Highlights
-- `src/model_training/image/` – image classification experiments for future extensions (CNN).
-- `notebooks/` – step‑by‑step experimentation for multiple model families.
-- `frontend/battery-best/` – React single-page app for demoing chemistry prediction directly in the browser.
+- `src/parser/` – vendor-specific parsers that normalize raw cycling data to processed CSVs.
+- `src/utils/` – helpers for demo dataset creation and exporting the logistic model to JSON.
+- `notebooks/` – end-to-end experimentation playbook (EDA through model comparisons).
+- `frontend/battery-best/` – React single-page app that consumes the exported demo artifacts.
 
 Notes:
 - Downsampling for the React demo is handled entirely by `create_demo_datasets.py`.
