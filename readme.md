@@ -46,6 +46,8 @@ Run preprocessing scripts first, then proceed with notebooks in order:
 7. `notebooks/07_Random_Forest_Classification.ipynb` – alternative tree-based baseline.
 8. `notebooks/08_1D_CNN.ipynb` – sequence-based CNN modeling for charge/discharge traces.
 9. `notebooks/09_image_based_classification.ipynb` – computer-vision pipeline using processed microscopy images.
+10. `notebooks/10_Selected_Model_Fitting_Review.ipynb` – review of selected fitting runs and diagnostics.
+11. `notebooks/11_Totals_by_Chemistry.ipynb` – aggregate counts and totals by chemistry.
 
 ### 4. Refresh frontend demo data + JS model
 In `05_Logistic_Regression_Exploration.ipynb`, run the final `%run` helper cell. It calls `create_demo_datasets.py` and `export_logreg_to_json.py` to regenerate demo CSVs and the JS model bundle whenever processed assets change.
