@@ -5,17 +5,17 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-# Ensure sibling imports work when executed as a script
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+# Ensure sibling imports work when executed as a script or module
+_current_dir = os.path.dirname(__file__)
+_parent_dir = os.path.join(_current_dir, "..")
+if _parent_dir not in sys.path:
+	sys.path.append(_parent_dir)
 
 # Reuse canonical helpers for splitting and resampling
-from .cs_cell_parser import (  # type: ignore
-    CellMetadata,
-    prepare_cycle_segment,
-    prepare_resampled_outputs,
-    resample_cycle_segment,
-    split_cycle_segments,
-)
+try:
+	from .cs_cell_parser import CellMetadata, prepare_resampled_outputs  # type: ignore
+except ImportError:  # pragma: no cover - fallback for direct script execution
+	from cs_cell_parser import CellMetadata, prepare_resampled_outputs  # type: ignore
 
 
 @dataclass
