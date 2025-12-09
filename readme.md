@@ -1,6 +1,6 @@
 # Battery Classifier
 
-The battery chemistry classification toolkit is built with Python 3.11. The repo bundles:
+The battery chemistry classification toolkit was built to promote the adoption of second-life Lithium-ion batteries, by enabling users with the ability to predict the cathodic chemistry utilized in the battery cell. The was built with Python 3.11. The repo bundles:
 
 - Data parsers that normalize vendor/partner test files into a common schema.
 - Notebook experiments for tabular and image models (logistic regression, random forest, CNN, etc.).
