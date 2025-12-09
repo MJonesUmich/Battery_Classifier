@@ -1,9 +1,9 @@
 # Battery Classifier
 
-Battery chemistry classification toolkit built with Python 3.11. The repo bundles:
+The battery chemistry classification toolkit is built with Python 3.11. The repo bundles:
 
 - Data parsers that normalize vendor/partner test files into a common schema.
-- Notebook experiments for tabular and image models (logistic regression, random forest, CNN).
+- Notebook experiments for tabular and image models (logistic regression, random forest, CNN, etc.).
 - Utilities that export lightweight artifacts (demo CSVs + JSON model weights) for the React frontend.
 
 You can explore the latest frontend build here: https://main.d1z5il29z8aho1.amplifyapp.com – it is the exact artifact produced by the steps described below, so stakeholders can see the deployed experience without running the project locally.
@@ -14,7 +14,7 @@ The codebase was optimized for fast iteration on local datasets and easy deploym
 
 ## How to Run
 
-All commands below are verified on Windows 10 PowerShell. Other operating systems have not been tested with this repo, so the steps may require adaptation.
+All commands below are operationally verified for executing on a Windows 10 PowerShell instance. Other operating systems have not been tested with this repo, and no claims are made for functionality in other operating systems. Additional steps may be require adaptation (e.g. Linux, Mac, etc.).
 
 ### 1. Bootstrap the environment
 ```powershell
@@ -26,7 +26,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Get the data assets
-- **Required (raw data)**: Download `raw_20251207.zip` (~14.09 GB) from https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing and extract to `assets/raw/` (folders such as CS2, CX2, Dataset_1_NCA_battery, INR, ISU, MIT, Oxford, PL, Stanford, TU_Finland). Without this, parsers and notebooks cannot run.
+- **Required (raw data)**: Download `raw_20251207.zip` (~14.09 GB) from https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing and extract to `assets/raw/` (folders such as CS2, CX2, Dataset_1_NCA_battery, INR, ISU, MIT, Oxford, PL, Stanford, TU_Finland). Without this, parsers and notebooks cannot run. Note this is a compressed selection of the datafiles used for this project. 
 - **Optional but recommended**: Download the processed/images bundle (~4.46 GB) from https://drive.google.com/file/d/1Sg6yYnOG9Xf_9XegGZ_khLr2wJUaHR38/view?usp=sharing and extract into `assets/` to populate `processed/`, `images/`, and `images_clipped/`. This skips >2 hours of preprocessing; otherwise, run `src/01_run_all_parsers.py` (and helpers) to rebuild processed data from raw.
 
 ### 3. Explore / retrain in notebooks
