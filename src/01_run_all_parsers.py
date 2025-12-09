@@ -39,13 +39,13 @@ def _ensure_raw_assets_present() -> None:
 	raw_dir = root / "assets" / "raw"
 	if not raw_dir.is_dir():
 		raise FileNotFoundError(
-			"Raw data missing. Download raw_20251207.zip from the README link "
+			"Raw data missing. Download raw_20251207.zip from the README link https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing"
 			"and extract to assets/raw/ before running parsers."
 		)
 
 	if not any((raw_dir / name).exists() for name in RAW_EXPECTED_SUBDIRS):
 		raise FileNotFoundError(
-			"Raw data appears incomplete. Extract raw_20251207.zip into "
+			"Raw data appears incomplete. Extract raw_20251207.zip https://drive.google.com/file/d/1sHScf_HNTzuAurPBTFqm3j2pkNYALomt/view?usp=sharing into "
 			"assets/raw/ (expected folders such as CS2, INR, MIT, Oxford, PL, "
 			"Stanford, TU_Finland)."
 		)
